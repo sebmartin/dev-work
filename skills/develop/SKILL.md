@@ -39,7 +39,7 @@ When it returns:
 ### 3. pr-review
 
 Set Phase: pr-review (round 1). Run `dev-work:pr-review` with args:
-`{ repo: <worktree>, runDir, planFile, scopeFile, spDir: SP, baseSha: <base>, branch: dev-work/<slug>, baseBranch: <default>, repoSlug: owner/repo, title: <short standalone PR title>, publicContext }`.
+`{ repo: <worktree>, runDir, planFile, scopeFile, spDir: SP, baseSha: <base>, branch: dev-work/<slug>, baseBranch: <target branch>, repoSlug: owner/repo, title: <short standalone PR title>, publicContext }`.
 When resuming after an operational failure where the PR already exists, also pass `prNumber`.
 
 When it returns:

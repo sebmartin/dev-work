@@ -1,4 +1,4 @@
-# dev-work (prototype, 0.1.1)
+# dev-work (prototype, 0.1.2)
 
 A plugin of development workflows. Each workflow takes a ticket or a todo to a reviewed pull request, with an agent orchestrating and code running the loops.
 
