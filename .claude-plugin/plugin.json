@@ -1,0 +1,16 @@
+{
+  "name": "dev-work",
+  "version": "0.1.0",
+  "description": "Development workflows orchestrated by an agent, with loops in dynamic workflows and Superpowers skills inside. Ships the general-purpose develop workflow: plan, implement and PR review.",
+  "author": {
+    "name": "Seb Martin"
+  },
+  "license": "MIT",
+  "keywords": [
+    "workflow",
+    "orchestration",
+    "code-review",
+    "superpowers",
+    "dev-work"
+  ]
+}
