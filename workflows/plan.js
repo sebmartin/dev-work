@@ -8,7 +8,7 @@ export const meta = {
 // args: { repo, runDir, scopeFile, planFile, failureReport? }
 const A = args
 const UNATTENDED = 'Nobody will answer questions: where you would ask, make the call and record it under Assumptions. Do not push or touch any remote.'
-const FORMAT = `Save the plan to ${A.planFile}; don't commit it. Start with a "Global constraints:" line copied verbatim from the scope. Each task is "### Task N: <name>" with Files, Interfaces and test-first steps. Prefer few tasks, in order; with more than one, the last checks the whole change against the scope. End with "## Assumptions".`
+const FORMAT = `Save the plan to ${A.planFile}; don't commit it. Start with a "Global constraints:" line copied verbatim from the scope. Each task is "### Task N: <name>" with Files, Interfaces (exact signatures consumed and produced) and test-first steps, each with its expected outcome. No placeholders or TODO text. Prefer few tasks, in order; with more than one, the last checks the whole change against the scope. End with "## Assumptions".`
 
 const str = { type: 'string' }
 const item = props => ({ type: 'object', properties: props, required: Object.keys(props) })

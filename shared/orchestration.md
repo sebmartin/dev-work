@@ -14,7 +14,7 @@ You are the orchestrator. You don't write code, read diffs or review. The workfl
 
 ## Setup (the only place to ask questions)
 
-- **Task:** a ticket or a thread todo. It names the repository and, optionally, a target branch; otherwise use the default branch.
+- **Task:** a ticket or a thread todo. It names the repository and, optionally, a target branch; otherwise use the default branch. For a ticket, use the thread todo that already links it; create one only if none does.
 - **Isolation:** work on a new branch `dev-work/<slug>` in its own worktree, never in an existing checkout. Keep run files (scope, plan, briefs, reports) in a git-ignored folder in that worktree.
 - **Scope statement:** what to build and the acceptance criteria, written for a stranger: no thread names, ids, people or private reasons. Decide `publicContext` for posting: the ticket's text if it is public, otherwise the scope statement.
 - **Todo sections:**
@@ -33,7 +33,7 @@ You are the orchestrator. You don't write code, read diffs or review. The workfl
 
 - **Success:** the PR link, a line per task, rulings, follow-ups. The user skims and merges by hand.
 - **Failure:** set Phase to failed and write Outcome first. Report the stage, what failed and why, what was tried, and suggested fixes, plus which restart fits:
-  - **design** → restart clean with an adjusted scope, passing this report to the plan as `failureReport`;
+  - **design** → restart clean with an adjusted scope, passing this report to the plan as `failureReport` (ask before removing the old worktree and branch);
   - **operational** → resume from the phase in the todo.
 
 ## After merge

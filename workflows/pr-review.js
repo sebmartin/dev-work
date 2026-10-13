@@ -31,13 +31,17 @@ const body = f => `**${f.id} · ${f.kind}**\n\n${f.text}${f.failure ? `\n\nFailu
 // Privacy gate. Fails closed: returns the flagged items, or null when everything is cleared.
 const gate = async (items, label, ph) => {
   if (!items.length) return null
-  const r = await agent(`Privacy gate for text about to be posted publicly on GitHub. You don't know the author's private context, and that's the point: flag any text referring to something a stranger with only the public context below couldn't resolve or verify (a person, a conversation, an internal decision or rule, a project, team or client, an event, an earlier agreement, a notes system, or an ungrounded specific fact). General knowledge, public standards, and anything grounded in the repository, ticket or PR are fine. When unsure, flag.
+  const r = await agent(`You are a privacy gate for text about to be posted publicly to GitHub (commit messages, PR bodies, review comments, replies).
+You do not know the author's private context, and that is the point: flag any text that refers to something a stranger who has ONLY the public context below could not resolve or verify. Typical examples: a person, a meeting or conversation, an internal decision, rule or document, a project, team, client or partner, an organisational or personal event, an earlier agreement, or a specific fact (a number, a constraint, a track record) that is asserted but not grounded in the public context. General programming knowledge, public standards, and anything grounded in the ticket, repository or PR (including its commits, issues and review) is fine. When unsure, flag: a false alarm is much cheaper than a leak.
 
-PUBLIC CONTEXT: ${A.publicContext}
+PUBLIC CONTEXT
+${A.publicContext}
 Repository: ${A.repoSlug} (code at ${A.repo}; read only).
 
-TEXTS:
-${items.map(i => `${i.id}:\n${i.text}`).join('\n\n')}`,
+TEXTS TO CHECK
+${items.map(i => `${i.id}:\n${i.text}`).join('\n\n')}
+
+Return one result per id, with flagged true/false and a one-line reason naming the ungrounded reference if any.`,
     { label, phase: ph, model: 'opus', effort: 'high', schema: obj({ results: arr(obj({ id: str, flagged: { type: 'boolean' }, reason: str })) }) })
   const cleared = new Set(r.results.filter(x => !x.flagged).map(x => x.id))
   const flagged = items.filter(i => !cleared.has(i.id)).map(i => r.results.find(x => x.id === i.id) || { id: i.id, reason: 'not checked' })
