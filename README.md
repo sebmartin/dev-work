@@ -1,4 +1,4 @@
-# dev-work (prototype, 0.1.2)
+# dev-work (prototype, 0.1.3)
 
 A plugin of development workflows. Each workflow takes a ticket or a todo to a reviewed pull request, with an agent orchestrating and code running the loops.
 
@@ -39,7 +39,7 @@ This is a prototype. It has been tested only in pieces, never end to end. Expect
 
 ## Using it
 
-From the target repository's directory, in a session with your thread resumed:
+From any session with your thread resumed. The ticket or todo names the repository; dev-work finds its clone under `/src` or clones it there:
 
 ```
 /dev-work:develop https://github.com/owner/repo/issues/123
