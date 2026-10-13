@@ -7,7 +7,7 @@ export const meta = {
 
 // args: { thread?, repo, runDir, scopeFile, planFile, failureReport? }
 const A = args
-const ag = (prompt, opts) => agent(A.thread ? `${prompt}\nThe ai-workspace thread "${A.thread}" holds this work's background and decisions; read it when it helps.` : prompt, opts)
+const ag = (prompt, opts) => agent(A.thread ? `${prompt}\nThe ai-workspace thread "${A.thread}" holds this work's background and decisions; read it when it helps. It is private: nothing from it goes into anything that could be published (code, comments, docs, commit messages, PR text, replies) unless it stands on its own for a stranger. Never name the thread, its notes or ids, or the people in it.` : prompt, opts)
 const UNATTENDED = 'Nobody will answer questions: where you would ask, make the call and record it under Assumptions. Do not push or touch any remote.'
 const FORMAT = `Save the plan to ${A.planFile}; don't commit it. Start with a "Global constraints:" line copied verbatim from the scope. Each task is "### Task N: <name>" with Files, Interfaces (exact signatures consumed and produced) and test-first steps, each with its expected outcome. No placeholders or TODO text. Prefer few tasks, in order; with more than one, the last checks the whole change against the scope. End with "## Assumptions".`
 
