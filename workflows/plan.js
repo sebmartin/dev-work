@@ -1,115 +1,73 @@
 export const meta = {
   name: 'plan',
   description: 'dev-work: write a plan, review it (plan reviewer and skeptic), revise once, re-check',
-  whenToUse: 'Started by the dev-work:develop skill; not meant to be run by hand.',
-  phases: [
-    { title: 'Write', detail: 'planner writes the plan with superpowers:writing-plans' },
-    { title: 'Review', detail: 'plan reviewer questions and skeptic objections, in parallel' },
-    { title: 'Revise', detail: 'one revision: change the plan or rebut each objection' },
-    { title: 'Re-check', detail: 'each item addressed or not; new problems in changed parts only' },
-  ],
+  whenToUse: 'Started by a dev-work workflow skill.',
+  phases: [{ title: 'Write' }, { title: 'Review' }, { title: 'Revise' }, { title: 'Re-check' }],
 }
 
 // args: { repo, runDir, scopeFile, planFile, failureReport? }
 const A = args
-const LOC = { type: 'object', properties: { skills_dir: { type: 'string' } }, required: ['skills_dir'] }
-// Superpowers' location comes from Claude Code itself, never from an assumed path.
-const locateSuperpowers = async ph => (await agent(`Use the Skill tool to load the skill "superpowers:writing-plans". Do not follow its instructions. The loaded text begins with a line "Base directory for this skill: <path>". Return the parent of that path (the directory that contains writing-plans/) as skills_dir. Do nothing else.`,
-  { label: 'locate-superpowers', phase: ph, schema: LOC, model: 'haiku', effort: 'low' })).skills_dir
-const UNATTENDED = `You are running unattended inside an automated pipeline. Nobody will answer questions. Do not offer choices or ask for approval; where a skill tells you to ask the user, make a reasonable call yourself and record it under "Assumptions". Do not push, open PRs, or touch any remote.`
-const FORMAT = `Plan format (required):
-- Save the plan to ${A.planFile}, not under docs/. Do not commit it.
-- First line after the title: "**Global constraints:**" followed by the binding requirements copied verbatim from the scope (language, test command, style rules).
-- Each task is a heading "### Task N: <name>" with **Files:**, **Interfaces:** (exact signatures consumed and produced) and test-first steps, each with its expected outcome.
-- Prefer few tasks, done in order. With more than one task, the last is an integration task that checks the whole change against the scope end to end.
-- No placeholders or TODOs. End with an "## Assumptions" section (may be empty).`
+const UNATTENDED = 'Nobody will answer questions: where you would ask, make the call and record it under Assumptions. Do not push or touch any remote.'
+const FORMAT = `Save the plan to ${A.planFile}; don't commit it. Start with a "Global constraints:" line copied verbatim from the scope. Each task is "### Task N: <name>" with Files, Interfaces and test-first steps. Prefer few tasks, in order; with more than one, the last checks the whole change against the scope. End with "## Assumptions".`
 
-const PLAN_OUT = { type: 'object', properties: {
-  task_count: { type: 'integer' }, size: { type: 'string', enum: ['small', 'medium', 'large'] },
-  summary: { type: 'string' }, assumptions: { type: 'array', items: { type: 'string' } } },
-  required: ['task_count', 'size', 'summary'] }
-const REVIEW_OUT = { type: 'object', properties: {
-  status: { type: 'string', enum: ['Approved', 'Issues Found'] },
-  issues: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } }, required: ['id', 'text'] } },
-  questions: { type: 'array', items: { type: 'object', properties: {
-    id: { type: 'string' }, text: { type: 'string' }, pile: { type: 'string', enum: ['answered', 'minor', 'blocking'] }, suggestion: { type: 'string' } },
-    required: ['id', 'text', 'pile'] } } }, required: ['status', 'issues', 'questions'] }
-const OBJ_OUT = { type: 'object', properties: { objections: { type: 'array', items: { type: 'object', properties: {
-  id: { type: 'string' }, text: { type: 'string' }, consequence: { type: 'string' } }, required: ['id', 'text', 'consequence'] } } },
-  required: ['objections'] }
-const REV_OUT = { type: 'object', properties: { responses: { type: 'array', items: { type: 'object', properties: {
-  id: { type: 'string' }, action: { type: 'string', enum: ['revised', 'rebutted'] }, note: { type: 'string' } }, required: ['id', 'action', 'note'] } },
-  task_count: { type: 'integer' } }, required: ['responses', 'task_count'] }
-const RECHECK_OUT = { type: 'object', properties: {
-  results: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, addressed: { type: 'boolean' }, reason: { type: 'string' } }, required: ['id', 'addressed', 'reason'] } },
-  new_problems: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' }, consequence: { type: 'string' } }, required: ['id', 'text', 'consequence'] } } },
-  required: ['results', 'new_problems'] }
+const str = { type: 'string' }
+const item = props => ({ type: 'object', properties: props, required: Object.keys(props) })
+const list = props => ({ type: 'array', items: item(props) })
 
 phase('Write')
-const SP = await locateSuperpowers('Write')
-const plan = await agent(`Use the superpowers:writing-plans skill to write an implementation plan for the scope in ${A.scopeFile}, for the git repository at ${A.repo}. Explore the code as the skill describes.
-${UNATTENDED}
-${FORMAT}
-${A.failureReport ? `A previous run of this pipeline failed. Read its failure report first and do not repeat the design it rejected: ${A.failureReport}` : ''}
-Return the task count, a size (small: one or two simple tasks; large: many tasks or risky changes), a two-sentence summary, and your assumptions.`,
-  { label: 'planner', phase: 'Write', schema: PLAN_OUT, model: 'opus', effort: 'high' })
+const plan = await agent(`Use the superpowers:writing-plans skill to plan the scope in ${A.scopeFile} for the repository at ${A.repo}. ${UNATTENDED}
+${FORMAT}${A.failureReport ? `\nA previous attempt failed; read ${A.failureReport} and don't repeat its design.` : ''}`,
+  { label: 'planner', phase: 'Write', model: 'opus', effort: 'high', schema: item({
+    task_count: { type: 'integer' }, size: { type: 'string', enum: ['small', 'medium', 'large'] }, summary: str }) })
 
 phase('Review')
-const reviewerTemplate = `${SP}/writing-plans/plan-document-reviewer-prompt.md`
 const [review, skeptic] = await parallel([
-  () => agent(`Read the prompt template ${reviewerTemplate}. Act as the subagent it describes, following the prompt inside its code block, with [PLAN_FILE_PATH] = ${A.planFile} and [SPEC_FILE_PATH] = ${A.scopeFile}. The repository is ${A.repo}; you may read code but must not modify anything.
-In addition, list the questions an implementer would still need answered before building. Sort each into a pile: "answered" (the plan already answers it), "minor" (you would make the call yourself; give your suggestion) or "blocking" (the answer changes what gets built). Give issues ids I1, I2… and questions ids Q1, Q2….`,
-    { label: 'plan-reviewer', phase: 'Review', schema: REVIEW_OUT, model: 'sonnet', effort: 'medium' }),
-  () => plan.size === 'small' ? Promise.resolve({ objections: [], skipped: true }) :
-    agent(`This is not a debate: there is one round and no reply. Read the scope in ${A.scopeFile} and the plan in ${A.planFile} for the repository at ${A.repo}. Do not write or edit any file.
-Return objections to the design only: a wrong approach, a missed simpler alternative, an unnamed risk, or scope creep. Each must name the concrete consequence if the plan is built as written. "Could be better" is not an objection, and neither is wording or style. An empty list is a valid answer. Give ids O1, O2….`,
-      { label: 'skeptic', phase: 'Review', schema: OBJ_OUT, model: 'opus', effort: 'high', agentType: 'ai-workspace:skeptic' }),
+  () => agent(`Follow the plan document reviewer prompt from the superpowers:writing-plans skill for the plan ${A.planFile} against the spec ${A.scopeFile} (repository ${A.repo}; read only).
+Also list the questions an implementer would still need answered, each sorted as "answered" (the plan answers it), "minor" (give your suggestion) or "blocking" (the answer changes what gets built). Ids: I1… for issues, Q1… for questions.`,
+    { label: 'plan-reviewer', phase: 'Review', model: 'sonnet', effort: 'medium', schema: item({
+      issues: list({ id: str, text: str }),
+      questions: list({ id: str, text: str, pile: { type: 'string', enum: ['answered', 'minor', 'blocking'] }, suggestion: str }) }) }),
+  () => plan.size === 'small' ? Promise.resolve({ objections: [] }) :
+    agent(`One round, no debate. Read the scope ${A.scopeFile} and the plan ${A.planFile} (repository ${A.repo}; read only). Return objections to the design only (a wrong approach, a missed simpler alternative, an unnamed risk, scope creep), each with its concrete consequence. "Could be better" is not an objection. Ids O1…; an empty list is fine.`,
+      { label: 'skeptic', phase: 'Review', model: 'opus', effort: 'high', agentType: 'ai-workspace:skeptic',
+        schema: item({ objections: list({ id: str, text: str, consequence: str }) }) }),
 ])
 
 const items = [
-  ...review.issues.map(i => ({ id: i.id, kind: 'issue', text: i.text })),
-  ...review.questions.filter(q => q.pile === 'blocking').map(q => ({ id: q.id, kind: 'blocking question', text: q.text })),
-  ...skeptic.objections.map(o => ({ id: o.id, kind: 'objection', text: `${o.text} (consequence: ${o.consequence})` })),
+  ...review.issues.map(i => `${i.id} (issue): ${i.text}`),
+  ...review.questions.filter(q => q.pile === 'blocking').map(q => `${q.id} (blocking question): ${q.text}`),
+  ...skeptic.objections.map(o => `${o.id} (objection): ${o.text} — consequence: ${o.consequence}`),
 ]
-const minorCalls = review.questions.filter(q => q.pile === 'minor')
-let responses = { responses: [], task_count: plan.task_count }
-let recheck = { results: [], new_problems: [] }
+const minor = review.questions.filter(q => q.pile === 'minor').map(q => `${q.id}: ${q.text} → ${q.suggestion || 'your call'}`)
+let responses = [], recheck = { results: [], new_problems: [] }, taskCount = plan.task_count
 
-if (items.length || minorCalls.length) {
+if (items.length || minor.length) {
   phase('Revise')
-  responses = await agent(`Revise the implementation plan at ${A.planFile} once, for the repository at ${A.repo} and the scope in ${A.scopeFile}.
-${UNATTENDED}
-Keep the plan format rules:
-${FORMAT}
-Respond to every item below. For issues and blocking questions, change the plan. For each objection, either revise the plan or rebut it with a concrete reason.
-${items.map(i => `${i.id} (${i.kind}): ${i.text}`).join('\n') || '(none)'}
-Also record these minor calls in the plan's Assumptions, using the suggestion unless you have a concrete reason not to:
-${minorCalls.map(q => `${q.id}: ${q.text} → ${q.suggestion || 'your call'}`).join('\n') || '(none)'}
-Return one response per item id, and the plan's task count after revision.`,
-    { label: 'planner-revise', phase: 'Revise', schema: REV_OUT, model: 'opus', effort: 'high' })
+  const rev = await agent(`Revise the plan ${A.planFile} once (scope ${A.scopeFile}, repository ${A.repo}). ${UNATTENDED} ${FORMAT}
+Respond to every item: change the plan for issues and blocking questions; revise or rebut each objection with a concrete reason.
+${items.join('\n') || '(none)'}
+Record these minor calls under Assumptions, using the suggestion unless you have a concrete reason not to:
+${minor.join('\n') || '(none)'}`,
+    { label: 'planner-revise', phase: 'Revise', model: 'opus', effort: 'high', schema: item({
+      responses: list({ id: str, action: { type: 'string', enum: ['revised', 'rebutted'] }, note: str }), task_count: { type: 'integer' } }) })
+  responses = rev.responses
+  taskCount = rev.task_count
 
   if (items.length) {
     phase('Re-check')
-    recheck = await agent(`Re-check a revised implementation plan at ${A.planFile} (scope: ${A.scopeFile}, repository: ${A.repo}). Do not modify anything.
-For each item below, decide whether the revision addressed it. "Attempted" is not addressed; neither is acknowledging an item or promising to deal with it later. A rebuttal counts as addressed only if its reason is concrete and correct.
-Then look for new problems that would cause a wrong build, in the parts of the plan that changed only. Do not raise anything else.
-Items:
-${items.map(i => `${i.id} (${i.kind}): ${i.text}`).join('\n')}
-Responses from the planner:
-${responses.responses.map(r => `${r.id}: ${r.action}: ${r.note}`).join('\n')}`,
-      { label: 'plan-recheck', phase: 'Re-check', schema: RECHECK_OUT, model: 'opus', effort: 'high' })
+    recheck = await agent(`Re-check the revised plan ${A.planFile} (scope ${A.scopeFile}, repository ${A.repo}; read only).
+For each item, decide whether it was addressed. "Attempted", acknowledged or deferred is not addressed; a rebuttal counts only if its reason is concrete and correct.
+Then list new problems that would cause a wrong build, in the changed parts only.
+Items:\n${items.join('\n')}
+Planner's responses:\n${responses.map(r => `${r.id}: ${r.action}: ${r.note}`).join('\n')}`,
+      { label: 'plan-recheck', phase: 'Re-check', model: 'opus', effort: 'high', schema: item({
+        results: list({ id: str, addressed: { type: 'boolean' }, reason: str }),
+        new_problems: list({ id: str, text: str, consequence: str }) }) })
   }
 }
 
-const open = recheck.results.filter(r => !r.addressed).map(r => ({ ...items.find(i => i.id === r.id), reason: r.reason }))
 return {
-  planFile: A.planFile,
-  task_count: responses.task_count || plan.task_count,
-  size: plan.size,
-  summary: plan.summary,
-  assumptions: plan.assumptions || [],
-  reviewer_status: review.status,
-  skeptic_skipped: !!skeptic.skipped,
-  items, responses: responses.responses,
-  open, new_problems: recheck.new_problems,
+  task_count: taskCount, size: plan.size, summary: plan.summary, responses,
+  open: recheck.results.filter(r => !r.addressed).map(r => ({ id: r.id, item: items.find(i => i.startsWith(`${r.id} `)), reason: r.reason })),
+  new_problems: recheck.new_problems,
 }
