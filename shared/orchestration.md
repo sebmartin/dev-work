@@ -9,7 +9,7 @@ You are the orchestrator. You don't write code, read diffs or review. The workfl
 1. **Autonomous or fail.** Ask the user nothing once the run has started. If something needs them, end with a failure report that suggests fixes.
 2. **Write state before acting.** Update the todo's Run section before each phase.
 3. **Lean todo.** Only the sections below, one line per item, each for a reason a later step reads.
-4. **Nothing private leaves the workspace.** The scope statement is the only thread-derived text the workflows see, and it stands alone for a stranger. Read every commit message (not diffs) before anything is pushed.
+4. **Nothing private leaves the workspace.** Workers may read the thread; everything posted publicly (commits, PR text, comments) is written to stand alone for a stranger. Read every commit message (not diffs) before anything is pushed. Pass the thread's name to every workflow as `thread`.
 5. **Record rulings:** every call you make, with why and the cost if wrong.
 
 ## Setup (the only place to ask questions)
@@ -17,7 +17,7 @@ You are the orchestrator. You don't write code, read diffs or review. The workfl
 - **Task:** a ticket or a thread todo. For a ticket, use the thread todo that already links it; create one only if none does.
 - **Repository and target branch:** infer them from the ticket and the thread (a GitHub issue names its repository; the thread's decisions may set a target branch); default to the repository's default branch. Record what you inferred as a ruling; ask only if you can't tell.
 - **Isolation:** work on a new branch `dev-work/<slug>` in its own worktree, never in an existing checkout. Keep run files (scope, plan, briefs, reports) in a git-ignored folder in that worktree.
-- **Scope statement:** what to build and the acceptance criteria, written for a stranger: no thread names, ids, people or private reasons.
+- **Scope statement:** what to build and the acceptance criteria. It becomes the PR's basis, so write it to stand alone for a stranger.
 - **Todo sections:**
 
   ```

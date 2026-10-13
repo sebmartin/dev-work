@@ -5,9 +5,9 @@ export const meta = {
   phases: [{ title: 'Tasks' }],
 }
 
-// args: { repo, runDir, planFile, globalConstraints, startTask, taskCount, answers? }
+// args: { thread?, repo, runDir, planFile, globalConstraints, startTask, taskCount, answers? }
 const A = args
-const ag = (prompt, opts) => agent(`${prompt}\nWork only inside ${A.repo}; do not read or search anything outside it.`, opts)
+const ag = (prompt, opts) => agent(A.thread ? `${prompt}\nThe ai-workspace thread "${A.thread}" holds this work's background and decisions; read it when it helps.` : prompt, opts)
 const CAP = 5
 const SDD = 'the superpowers:subagent-driven-development skill'
 const LOCAL = 'Commit on the current branch only; do not push or touch any remote.'

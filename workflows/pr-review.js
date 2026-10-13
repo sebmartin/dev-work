@@ -5,9 +5,9 @@ export const meta = {
   phases: [{ title: 'Open' }, { title: 'Review' }, { title: 'Rounds' }],
 }
 
-// args: { repo, runDir, planFile, scopeFile, baseSha, branch, baseBranch, repoSlug, title, prNumber? }
+// args: { thread?, repo, runDir, planFile, scopeFile, baseSha, branch, baseBranch, repoSlug, title, prNumber? }
 const A = args
-const ag = (prompt, opts) => agent(`${prompt}\nWork only inside ${A.repo}; do not read or search anything outside it.`, opts)
+const ag = (prompt, opts) => agent(A.thread ? `${prompt}\nThe ai-workspace thread "${A.thread}" holds this work's background and decisions; read it when it helps.` : prompt, opts)
 const CAP = 3
 const BAR = `Classify each finding:
 - blocker: a correctness bug, broken contract, security problem, data loss, changed behaviour without a test, duplicated logic, a swallowed error or a test that asserts nothing, AND you can state the concrete failure (input or state, and the wrong outcome). Never for pre-existing problems.

@@ -26,7 +26,7 @@ More workflows (refactor, architecture review, …) can be added as skills that 
 
 The orchestrator infers the repository and target branch from the ticket and the thread, and asks only if it can't tell. Watch a run with `/workflows`. It ends with "PR ready" or a failure report that suggests fixes. After you merge, say so to review the follow-ups.
 
-Privacy rests on two conventions: everything posted is written to stand alone for a stranger, and the agents doing the work are told to stay inside the run's worktree. Neither is enforced.
+Every agent can read the task's thread for background. Privacy rests on one convention, not enforced: everything posted is written to stand alone for a stranger. You skim the PR before merging.
 
 ## Status
 
