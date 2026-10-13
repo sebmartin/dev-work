@@ -1,4 +1,4 @@
-# dev-work (prototype, 0.1.3)
+# dev-work (prototype, 0.1.1)
 
 A plugin of development workflows. Each workflow takes a ticket or a todo to a reviewed pull request, with an agent orchestrating and code running the loops.
 
@@ -39,7 +39,7 @@ This is a prototype. It has been tested only in pieces, never end to end. Expect
 
 ## Using it
 
-From any session with your thread resumed. The ticket or todo names the repository; dev-work finds its clone under `/src` or clones it there:
+From any session with your thread resumed. The ticket or todo names the repository; dev-work finds or creates its local clone wherever your environment's instructions say clones go, and asks if they say nothing:
 
 ```
 /dev-work:develop https://github.com/owner/repo/issues/123
@@ -75,7 +75,7 @@ You can watch any phase live with `/workflows`. Your session stays free while on
 - **No bot handling.** Comments from CodeRabbit, Copilot and the like on the PR are ignored by the loop. Read them yourself when you skim.
 - **Coders run in order,** one worktree per run, no parallel coders.
 - **Resuming.** A workflow resumes only in the session that started it. In a new session, the orchestrator re-runs the phase recorded in the todo.
-- **Superpowers version drift.** dev-work reads Superpowers' template files by path, from the newest copy installed through the official marketplace (`claude-plugins-official`). If a future version renames a template or changes its placeholders, the workflows break. They say which file.
+- **Superpowers version drift.** dev-work reads Superpowers' template files from wherever Claude Code reports the installed Superpowers skills live. If a future version renames a template or changes its placeholders, the workflows break. They say which file.
 - **Privacy is checked twice** before anything is pushed or posted: the orchestrator reads the commit messages, and the gate checks everything. Neither one knows the thread's private content. Leaks are caught by spotting references a stranger couldn't resolve, so a private fact phrased as general advice could slip through.
 
 ## Layout

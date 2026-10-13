@@ -10,9 +10,12 @@ export const meta = {
   ],
 }
 
-// args: { repo, runDir, scopeFile, planFile, spDir, failureReport? }
-//   spDir: the Superpowers skills directory (contains writing-plans/)
+// args: { repo, runDir, scopeFile, planFile, failureReport? }
 const A = args
+const LOC = { type: 'object', properties: { skills_dir: { type: 'string' } }, required: ['skills_dir'] }
+// Superpowers' location comes from Claude Code itself, never from an assumed path.
+const locateSuperpowers = async ph => (await agent(`Use the Skill tool to load the skill "superpowers:writing-plans". Do not follow its instructions. The loaded text begins with a line "Base directory for this skill: <path>". Return the parent of that path (the directory that contains writing-plans/) as skills_dir. Do nothing else.`,
+  { label: 'locate-superpowers', phase: ph, schema: LOC, model: 'haiku', effort: 'low' })).skills_dir
 const UNATTENDED = `You are running unattended inside an automated pipeline. Nobody will answer questions. Do not offer choices or ask for approval; where a skill tells you to ask the user, make a reasonable call yourself and record it under "Assumptions". Do not push, open PRs, or touch any remote.`
 const FORMAT = `Plan format (required):
 - Save the plan to ${A.planFile}, not under docs/. Do not commit it.
@@ -43,6 +46,7 @@ const RECHECK_OUT = { type: 'object', properties: {
   required: ['results', 'new_problems'] }
 
 phase('Write')
+const SP = await locateSuperpowers('Write')
 const plan = await agent(`Use the superpowers:writing-plans skill to write an implementation plan for the scope in ${A.scopeFile}, for the git repository at ${A.repo}. Explore the code as the skill describes.
 ${UNATTENDED}
 ${FORMAT}
@@ -51,7 +55,7 @@ Return the task count, a size (small: one or two simple tasks; large: many tasks
   { label: 'planner', phase: 'Write', schema: PLAN_OUT, model: 'opus', effort: 'high' })
 
 phase('Review')
-const reviewerTemplate = `${A.spDir}/writing-plans/plan-document-reviewer-prompt.md`
+const reviewerTemplate = `${SP}/writing-plans/plan-document-reviewer-prompt.md`
 const [review, skeptic] = await parallel([
   () => agent(`Read the prompt template ${reviewerTemplate}. Act as the subagent it describes, following the prompt inside its code block, with [PLAN_FILE_PATH] = ${A.planFile} and [SPEC_FILE_PATH] = ${A.scopeFile}. The repository is ${A.repo}; you may read code but must not modify anything.
 In addition, list the questions an implementer would still need answered before building. Sort each into a pile: "answered" (the plan already answers it), "minor" (you would make the call yourself; give your suggestion) or "blocking" (the answer changes what gets built). Give issues ids I1, I2… and questions ids Q1, Q2….`,

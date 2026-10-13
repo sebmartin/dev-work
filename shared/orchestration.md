@@ -16,7 +16,7 @@ You are the **orchestrator**. You do not write code, read diffs, or review. Dyna
 
 - **Task:** a ticket URL (GitHub issue, Jira, …) or a todo in the current thread. If neither was given, ask.
 - **Thread:** the ai-workspace thread must be resumed in this session. If none is, ask which one and resume it.
-- **Repository:** take it from the ticket or todo, never from the session's working directory (sessions usually start elsewhere). A GitHub issue URL names it; otherwise the ticket or todo should. Note `owner/repo`. Find its clone in the source directory (`/src/<repo>` by convention, one directory per repository); if there is none, clone it there. If the ticket names no repository, ask (setup is the only place questions are allowed).
+- **Repository:** take it from the ticket or todo, never from the session's working directory. A GitHub issue URL names it; otherwise the ticket or todo should. Note `owner/repo`. dev-work makes no assumption about where repositories live: find a local clone by following the environment's own instructions (its CLAUDE.md files or equivalent); if there is no clone, clone it where those instructions say. If the ticket names no repository, or the environment says nothing about where clones go, ask (setup is the only place questions are allowed).
 - **Target branch:** the branch the work starts from and the PR targets. Follow the ticket or todo: if it names a target branch (for example a release branch), use that. Otherwise use the repository's default branch. Don't ask; if the ticket is ambiguous, take the default and record it under Rulings.
 
 ## Setup
@@ -43,9 +43,9 @@ You are the **orchestrator**. You do not write code, read diffs, or review. Dyna
    ## Outcome
    ```
 
-2. **Worktree.** Never touch the clone's own checkout. Use explicit paths, never `cd`-relative ones: `git -C /src/<repo> fetch origin <target>` then `git -C /src/<repo> worktree add -b dev-work/<slug> /src/<repo>-dev-work-<slug> origin/<target>`. Always pass the base explicitly.
+2. **Worktree.** Never touch the clone's own checkout. Create the worktree next to the clone (a sibling directory named `<repo>-dev-work-<slug>`), unless the environment's instructions say where worktrees go. Use absolute paths derived from the clone's location, never paths relative to the session's working directory: `git -C <clone> fetch origin <target>` then `git -C <clone> worktree add -b dev-work/<slug> <worktree path> origin/<target>`. Always pass the base explicitly.
 3. **Run dir.** `<worktree>/.dev-work/<slug>/`. Add `.dev-work/` to the main repository's `.git/info/exclude` so it is never committed.
-4. **Superpowers path.** `find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -type d -path '*/claude-plugins-official/superpowers/*/skills' | sort -V | tail -1` (the copy from the official marketplace, which is the one that loads in remote-control sessions). Call it `SP`; `SDD` is `$SP/subagent-driven-development`. If it isn't found, fail (operational): Superpowers must be installed.
+4. **Superpowers.** Must be installed; the workflows locate it themselves (an agent loads a Superpowers skill and reports the directory Claude Code says it lives in), so you pass no path. If a workflow fails because Superpowers isn't available, fail (operational).
 5. **Scope statement.** Write `<run dir>/scope.md`: what to do and the acceptance criteria, from the ticket or todo, **written for a stranger**: no thread names, todo ids, people, or private reasons; restate any reason in its own terms. Also decide `publicContext` for any workflow that posts: the ticket's text if the ticket is public (a GitHub issue on this repo), otherwise the scope statement.
 
 ## Running a workflow

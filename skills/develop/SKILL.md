@@ -18,7 +18,7 @@ After setup (per the shared file), with `Workflow: develop` in the todo:
 ### 1. plan
 
 Set Phase: plan. Run `dev-work:plan` with args:
-`{ repo: <worktree>, runDir, scopeFile: <run dir>/scope.md, planFile: <run dir>/plan.md, spDir: SP, failureReport: <path, only on a clean restart> }`.
+`{ repo: <worktree>, runDir, scopeFile: <run dir>/scope.md, planFile: <run dir>/plan.md, failureReport: <path, only on a clean restart> }`.
 
 When it returns, **rule**:
 - `open` and `new_problems` both empty → accept.
@@ -28,7 +28,7 @@ When it returns, **rule**:
 ### 2. implement
 
 Set Phase: implement (task 1). Run `dev-work:implement` with args:
-`{ repo: <worktree>, runDir, planFile, sddDir: SDD, globalConstraints: <the plan's Global constraints text>, startTask: 1, taskCount }`.
+`{ repo: <worktree>, runDir, planFile, globalConstraints: <the plan's Global constraints text>, startTask: 1, taskCount }`.
 
 When it returns:
 - `needs_orchestrator`: a coder asked a question. Answer it from the plan, the scope or the thread, or make the call and record it under Rulings. Re-run `dev-work:implement` with `startTask: <that task>` and `answers: <your answer>`. If you genuinely can't answer without the user, fail (design).
@@ -39,7 +39,7 @@ When it returns:
 ### 3. pr-review
 
 Set Phase: pr-review (round 1). Run `dev-work:pr-review` with args:
-`{ repo: <worktree>, runDir, planFile, scopeFile, spDir: SP, baseSha: <base>, branch: dev-work/<slug>, baseBranch: <target branch>, repoSlug: owner/repo, title: <short standalone PR title>, publicContext }`.
+`{ repo: <worktree>, runDir, planFile, scopeFile, baseSha: <base>, branch: dev-work/<slug>, baseBranch: <target branch>, repoSlug: owner/repo, title: <short standalone PR title>, publicContext }`.
 When resuming after an operational failure where the PR already exists, also pass `prNumber`.
 
 When it returns:

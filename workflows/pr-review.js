@@ -9,9 +9,13 @@ export const meta = {
   ],
 }
 
-// args: { repo, runDir, planFile, scopeFile, spDir, baseSha, branch, baseBranch, repoSlug, title, publicContext, prNumber? }
-//   spDir: the Superpowers skills directory; publicContext: what a stranger can see (ticket text if public, else the scope statement)
+// args: { repo, runDir, planFile, scopeFile, baseSha, branch, baseBranch, repoSlug, title, publicContext, prNumber? }
+//   publicContext: what a stranger can see (ticket text if public, else the scope statement)
 const A = args
+const LOC = { type: 'object', properties: { skills_dir: { type: 'string' } }, required: ['skills_dir'] }
+// Superpowers' location comes from Claude Code itself, never from an assumed path.
+const locateSuperpowers = async ph => (await agent(`Use the Skill tool to load the skill "superpowers:writing-plans". Do not follow its instructions. The loaded text begins with a line "Base directory for this skill: <path>". Return the parent of that path (the directory that contains writing-plans/) as skills_dir. Do nothing else.`,
+  { label: 'locate-superpowers', phase: ph, schema: LOC, model: 'haiku', effort: 'low' })).skills_dir
 const CAP = 3
 const BAR = `Classify every finding:
 - "blocker" only if it is one of: a correctness bug, a broken contract or interface, a security problem, data loss, changed behaviour without a test, duplicated logic, a swallowed error, or a test that asserts nothing, AND you can state a concrete failure (the input or state, and the wrong outcome). Pre-existing problems the change does not make worse are never blockers.
@@ -73,6 +77,7 @@ const fmt = f => `**${f.id} · ${f.kind}**\n\n${f.text}${f.failure ? `\n\nFailur
 
 // ---------- Open ----------
 phase('Open')
+const SP = await locateSuperpowers('Open')
 let prNumber = A.prNumber || null, prUrl = null
 if (!prNumber) {
   const bodyFile = `${A.runDir}/pr-body.md`
@@ -96,7 +101,7 @@ Base it on the scope in ${A.scopeFile} and the plan in ${A.planFile}. It is read
 // ---------- Review ----------
 phase('Review')
 const ledger = {}  // id -> { ...finding, state: open|fixed|dropped|follow-up|refuted, url, comment_id }
-const first = await agent(`Read the prompt template ${A.spDir}/requesting-code-review/code-reviewer.md. Act as the reviewer it describes, following the prompt inside its code block with:
+const first = await agent(`Read the prompt template ${SP}/requesting-code-review/code-reviewer.md. Act as the reviewer it describes, following the prompt inside its code block with:
 - [DESCRIPTION] = ${A.title}
 - [PLAN_OR_REQUIREMENTS] = the scope in ${A.scopeFile} and the plan in ${A.planFile}
 - [BASE_SHA] = ${A.baseSha}

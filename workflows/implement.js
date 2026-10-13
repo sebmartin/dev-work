@@ -5,10 +5,13 @@ export const meta = {
   phases: [{ title: 'Tasks', detail: 'per task: brief, implement, review, fix loop (cap 5)' }],
 }
 
-// args: { repo, runDir, planFile, sddDir, globalConstraints, startTask, taskCount, answers? }
-//   sddDir: Superpowers' subagent-driven-development skill directory
+// args: { repo, runDir, planFile, globalConstraints, startTask, taskCount, answers? }
 //   answers: optional text the orchestrator gives a task that previously returned NEEDS_CONTEXT
 const A = args
+const LOC = { type: 'object', properties: { skills_dir: { type: 'string' } }, required: ['skills_dir'] }
+// Superpowers' location comes from Claude Code itself, never from an assumed path.
+const locateSuperpowers = async ph => (await agent(`Use the Skill tool to load the skill "superpowers:writing-plans". Do not follow its instructions. The loaded text begins with a line "Base directory for this skill: <path>". Return the parent of that path (the directory that contains writing-plans/) as skills_dir. Do nothing else.`,
+  { label: 'locate-superpowers', phase: ph, schema: LOC, model: 'haiku', effort: 'low' })).skills_dir
 const CAP = 5
 const NO_REMOTE = 'Commit on the current branch only. Do not push, create branches, open PRs, or touch any remote.'
 
@@ -28,18 +31,19 @@ const REREVIEW = { type: 'object', properties: {
   results: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, addressed: { type: 'boolean' }, reason: { type: 'string' } }, required: ['id', 'addressed'] } },
   new_findings: { type: 'array', items: FINDING } }, required: ['results', 'new_findings'] }
 
-const fill = (tpl, values) => `Read the prompt template ${A.sddDir}/${tpl}. Act as the subagent it describes: follow the prompt inside its code block with the placeholder values below. Leave the scene-setting placeholder empty. Work in the git repository ${A.repo}. Scripts written as scripts/... are in ${A.sddDir}/scripts/; run them with bash.
+const fill = (tpl, values) => `Read the prompt template ${SDD}/${tpl}. Act as the subagent it describes: follow the prompt inside its code block with the placeholder values below. Leave the scene-setting placeholder empty. Work in the git repository ${A.repo}. Scripts written as scripts/... are in ${SDD}/scripts/; run them with bash.
 ${Object.entries(values).map(([k, v]) => `- [${k}] = ${v}`).join('\n')}`
 const mech = (cmd, label) => agent(`Run this shell command exactly, then report HEAD (\`git -C ${A.repo} rev-parse HEAD\`), whether the command succeeded, and its last 20 lines of output. Do nothing else.\n\n${cmd}`,
   { label, phase: 'Tasks', schema: MECH, model: 'haiku', effort: 'low' })
 const list = fs => fs.map(f => `${f.id} (${f.severity}): ${f.text}`).join('\n')
 
 phase('Tasks')
+const SDD = `${await locateSuperpowers('Tasks')}/subagent-driven-development`
 const tasks = []
 let head = null
 for (let n = A.startTask || 1; n <= A.taskCount; n++) {
   const brief = `${A.runDir}/task-${n}-brief.md`, report = `${A.runDir}/task-${n}-report.md`
-  const prep = await mech(`cd ${A.repo} && bash ${A.sddDir}/scripts/task-brief ${A.planFile} ${n} ${brief}`, `brief-${n}`)
+  const prep = await mech(`cd ${A.repo} && bash ${SDD}/scripts/task-brief ${A.planFile} ${n} ${brief}`, `brief-${n}`)
   if (!prep.ok) return { status: 'failed', stage: `brief for task ${n}`, detail: prep.output, tasks }
   const base = prep.head
   const entry = { task: n, base, rounds: [], parked: [], deferred_minor: [] }
@@ -57,7 +61,7 @@ for (let n = A.startTask || 1; n <= A.taskCount; n++) {
   head = impl.head_sha
 
   const diff = `${A.runDir}/review-${n}-0.diff`
-  const pkg = await mech(`cd ${A.repo} && bash ${A.sddDir}/scripts/review-package ${A.planFile} ${base} ${head} ${diff}`, `package-${n}`)
+  const pkg = await mech(`cd ${A.repo} && bash ${SDD}/scripts/review-package ${A.planFile} ${base} ${head} ${diff}`, `package-${n}`)
   if (!pkg.ok) return { status: 'failed', stage: `review package for task ${n}`, detail: pkg.output, tasks }
   const review = await agent(fill('task-reviewer-prompt.md', { BRIEF_FILE: brief, GLOBAL_CONSTRAINTS: A.globalConstraints, REPORT_FILE: report,
     BASE_SHA: base, HEAD_SHA: head, DIFF_FILE: diff }) +
@@ -81,7 +85,7 @@ Return the HEAD sha after your fix.`,
     head = fix.head_sha
     ;(fix.disputes || []).forEach(d => { disputes[d.id] = d.evidence })
     const rdiff = `${A.runDir}/review-${n}-${round}.diff`
-    const rpkg = await mech(`cd ${A.repo} && bash ${A.sddDir}/scripts/review-package ${A.planFile} ${fixBase} ${head} ${rdiff}`, `package-${n}-r${round}`)
+    const rpkg = await mech(`cd ${A.repo} && bash ${SDD}/scripts/review-package ${A.planFile} ${fixBase} ${head} ${rdiff}`, `package-${n}-r${round}`)
     if (!rpkg.ok) { entry.rounds.push({ round, note: 'no new commits in fix round' }); continue }
     const rr = await agent(fill('re-review-prompt.md', { BRIEF_FILE: brief, FINDINGS: list(open), REPORT_FILE: report,
       FIX_BASE_SHA: fixBase, HEAD_SHA: head, DIFF_FILE: rdiff }) +
