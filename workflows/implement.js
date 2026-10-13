@@ -7,6 +7,7 @@ export const meta = {
 
 // args: { repo, runDir, planFile, globalConstraints, startTask, taskCount, answers? }
 const A = args
+const ag = (prompt, opts) => agent(`${prompt}\nWork only inside ${A.repo}; do not read or search anything outside it.`, opts)
 const CAP = 5
 const SDD = 'the superpowers:subagent-driven-development skill'
 const LOCAL = 'Commit on the current branch only; do not push or touch any remote.'
@@ -21,7 +22,7 @@ const REVIEW = obj({ spec_verdict: { type: 'string', enum: ['pass', 'fail'] }, q
   findings: { type: 'array', items: FINDING } })
 const REREVIEW = obj({ results: { type: 'array', items: obj({ id: str, addressed: { type: 'boolean' } }) }, new_findings: { type: 'array', items: FINDING } })
 
-const mech = (what, label) => agent(`In ${A.repo}: ${what} Report HEAD, whether it succeeded, and the output.`,
+const mech = (what, label) => ag(`In ${A.repo}: ${what} Report HEAD, whether it succeeded, and the output.`,
   { label, phase: 'Tasks', schema: MECH, model: 'haiku', effort: 'low' })
 const template = (name, values) => `Follow the ${name} prompt template from ${SDD}, working in ${A.repo}, with: ${Object.entries(values).map(([k, v]) => `${k} = ${v}`).join('; ')}.`
 const fmt = fs => fs.map(f => `${f.id} (${f.severity}): ${f.text}`).join('\n')
@@ -35,7 +36,7 @@ for (let n = A.startTask || 1; n <= A.taskCount; n++) {
   if (!prep.ok) return { status: 'failed', stage: `brief ${n}`, detail: prep.output, tasks }
   const base = prep.head, entry = { task: n, base, rounds: [] }
 
-  const impl = await agent(template('implementer', { brief: brief, report: report }) + ` ${LOCAL} Global constraints: ${A.globalConstraints}` +
+  const impl = await ag(template('implementer', { brief: brief, report: report }) + ` ${LOCAL} Global constraints: ${A.globalConstraints}` +
     (A.answers && n === A.startTask ? ` Answer to your earlier question: ${A.answers}` : ''),
     { label: `implement-${n}`, phase: 'Tasks', schema: IMPL, model: 'sonnet', effort: 'medium' })
   if (impl.status === 'NEEDS_CONTEXT' || impl.status === 'BLOCKED')
@@ -45,7 +46,7 @@ for (let n = A.startTask || 1; n <= A.taskCount; n++) {
   const diff = `${A.runDir}/review-${n}-0.diff`
   const pkg = await mech(`write the review package for ${base}..${head} to ${diff} with ${SDD}'s review-package script (plan ${A.planFile}).`, `package-${n}`)
   if (!pkg.ok) return { status: 'failed', stage: `package ${n}`, detail: pkg.output, tasks }
-  const review = await agent(template('task reviewer', { brief, report, 'global constraints': A.globalConstraints, base, head, 'diff file': diff }) +
+  const review = await ag(template('task reviewer', { brief, report, 'global constraints': A.globalConstraints, base, head, 'diff file': diff }) +
     ` Report every spec gap as a finding too. Ids T${n}-1…. Read only.`,
     { label: `review-${n}`, phase: 'Tasks', schema: REVIEW, model: 'sonnet', effort: 'medium' })
   entry.review = `${review.spec_verdict}, ${review.quality_verdict}`
@@ -55,7 +56,7 @@ for (let n = A.startTask || 1; n <= A.taskCount; n++) {
 
   for (let round = 1; open.length && round <= CAP; round++) {
     const fixBase = head
-    const fix = await agent(template('implementer', { brief, report }) + ` ${LOCAL}
+    const fix = await ag(template('implementer', { brief, report }) + ` ${LOCAL}
 Fix round ${round}${round > 3 ? ' (taking over: read the report for what was tried)' : ''}: address only these findings, append a fix report with the test command and output, and commit.
 ${fmt(open)}
 If a finding is wrong, don't change code for it: dispute it with concrete evidence (a cited file:line, or a test and its output). A stated preference is not evidence.`,
@@ -65,7 +66,7 @@ If a finding is wrong, don't change code for it: dispute it with concrete eviden
     const rdiff = `${A.runDir}/review-${n}-${round}.diff`
     const rpkg = await mech(`write the review package for ${fixBase}..${head} to ${rdiff} with ${SDD}'s review-package script (plan ${A.planFile}).`, `package-${n}-r${round}`)
     if (!rpkg.ok) { entry.rounds.push({ round, note: 'no new commits' }); continue }
-    const rr = await agent(template('re-review', { brief, report, findings: fmt(open), 'fix base': fixBase, head, 'diff file': rdiff }) +
+    const rr = await ag(template('re-review', { brief, report, findings: fmt(open), 'fix base': fixBase, head, 'diff file': rdiff }) +
       (Object.keys(disputes).length ? `\nDisputed with evidence (addressed if the evidence concretely refutes it):\n${Object.entries(disputes).map(([k, v]) => `${k}: ${v}`).join('\n')}` : '') +
       ` New finding ids T${n}-R${round}-1…. Read only.`,
       { label: `re-review-${n}-r${round}`, phase: 'Tasks', schema: REREVIEW, model: 'sonnet', effort: 'medium' })

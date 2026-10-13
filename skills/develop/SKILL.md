@@ -23,8 +23,7 @@ Then read the commit messages before anything is pushed.
 
 ## 3. pr-review
 
-Run `dev-work:pr-review` with `{ repo, runDir, planFile, scopeFile, baseSha, branch, baseBranch, repoSlug, title, publicContext, prNumber? }`.
+Run `dev-work:pr-review` with `{ repo, runDir, planFile, scopeFile, baseSha, branch, baseBranch, repoSlug, title, prNumber? }`.
 - `ready`: record the PR, follow-ups and refuted blockers; report success.
 - `blocked_at_cap`: fail with the open blockers.
-- `privacy_blocked`: if the flag is right, fail (operational) and suggest a rewording. Never post around the gate.
 - `failed`: fail (operational).

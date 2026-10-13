@@ -16,7 +16,7 @@ You are the orchestrator. You don't write code, read diffs or review. The workfl
 
 - **Task:** a ticket or a thread todo. It names the repository and, optionally, a target branch; otherwise use the default branch. For a ticket, use the thread todo that already links it; create one only if none does.
 - **Isolation:** work on a new branch `dev-work/<slug>` in its own worktree, never in an existing checkout. Keep run files (scope, plan, briefs, reports) in a git-ignored folder in that worktree.
-- **Scope statement:** what to build and the acceptance criteria, written for a stranger: no thread names, ids, people or private reasons. Decide `publicContext` for posting: the ticket's text if it is public, otherwise the scope statement.
+- **Scope statement:** what to build and the acceptance criteria, written for a stranger: no thread names, ids, people or private reasons.
 - **Todo sections:**
 
   ```
