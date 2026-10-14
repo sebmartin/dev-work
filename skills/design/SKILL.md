@@ -26,4 +26,4 @@ The design is read by agents that never see the thread, so it has to stand on it
 
 1. Link the design from the todo, in one line.
 2. Save the thread's session with the ai-workspace threads skill, without asking: the user is about to clear this conversation.
-3. Tell the user the design is ready and the session saved, and that the next step is `/clear` (so the orchestrator starts with only the design), then `/dev-work:develop <todo>`.
+3. Tell the user the design is ready and the session saved, and that the next step is a fresh session (`/clear` in a terminal, a new conversation elsewhere) so the orchestrator starts with only the design, then `/dev-work:develop <todo>`.
