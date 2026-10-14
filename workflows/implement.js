@@ -42,8 +42,16 @@ for (let n = A.startTask || 1; n <= A.taskCount; n++) {
   if (impl.status === 'NEEDS_CONTEXT' || impl.status === 'BLOCKED')
     return { status: 'needs_orchestrator', task: n, question: impl.question || impl.summary, tasks }
   head = impl.head_sha
+  const same = (a, b) => !!a && !!b && (a.startsWith(b) || b.startsWith(a))
+  if (same(head, base)) {
+    // nothing committed (e.g. a verification-only task): nothing to review
+    tasks.push({ ...entry, implementer: impl.status, summary: impl.summary, review: 'skipped: no changes', parked: [], final_head: base })
+    log(`Task ${n}: no changes, review skipped`)
+    head = base
+    continue
+  }
 
-  const diff = `${A.runDir}/review-${n}-0.diff`
+  const diff =`${A.runDir}/review-${n}-0.diff`
   const pkg = await mech(`write the review package for ${base}..${head} to ${diff} with ${SDD}'s review-package script (plan ${A.planFile}).`, `package-${n}`)
   if (!pkg.ok) return { status: 'failed', stage: `package ${n}`, detail: pkg.output, tasks }
   const review = await ag(template('task reviewer', { brief, report, 'global constraints': A.globalConstraints, base, head, 'diff file': diff }) +
