@@ -1,16 +1,13 @@
 # dev-work (prototype, 0.1.1)
 
-Development workflows where an agent orchestrates and dynamic workflows run the loops.
+Takes a thread todo with a linked design through Superpowers to a pull request ready for human review. An agent orchestrator stands where Superpowers expects a human, and a dynamic workflow replaces Superpowers' subagent-driven-development controller.
 
-**`/dev-work:develop`** is the general-purpose workflow, and the default. It follows Superpowers' workflow, with the orchestrator standing where Superpowers expects a human. It starts from a thread todo whose **design** (an artifact with the decisions, their motivation and the acceptance criteria) you have already worked out, typically with Superpowers' brainstorming:
-- **plan:** `superpowers:writing-plans` turns the design into tasks.
-- **implement:** tasks in order, each reviewed, with a fix loop capped at 5 rounds.
-- **review:** locally, the whole change reviewed, a verifier that tries to disprove each blocker, then fix and re-review, for up to 3 rounds. It drafts the PR description.
-- **publish:** the orchestrator pushes and opens the PR: the point where it's ready for humans.
+**`/dev-work:develop`** starts from a thread todo whose **design** (an artifact with the decisions, their motivation and the acceptance criteria) you have already worked out, typically with Superpowers' brainstorming:
+- **plan:** a subagent runs `superpowers:writing-plans` on the design. The plan stays out of the repository.
+- **execute:** the `execute` workflow runs the plan the way `superpowers:subagent-driven-development` does, with its prompts, scripts and ledger: a pre-flight scan, each task implemented and reviewed with up to 5 fix rounds, then a final whole-branch review. A ruler agent makes the calls SDD leaves to its controller.
+- **finish:** the orchestrator uses `superpowers:finishing-a-development-branch` to push and open the PR, then writes the PR link, rulings and follow-ups back to the thread.
 
 You merge by hand.
-
-More workflows (refactor, architecture review, …) can be added as skills that reuse `shared/orchestration.md` and the phase workflows.
 
 ## Requires
 
@@ -25,18 +22,17 @@ More workflows (refactor, architecture review, …) can be added as skills that 
 /dev-work:develop <thread todo with a linked design>
 ```
 
-The orchestrator infers the repository and target branch from the design, the todo and the thread, and asks only if it can't tell. Watch a run with `/workflows`. It ends with "PR ready" or a failure report that suggests fixes. After you merge, say so to review the follow-ups.
+Watch the execute step with `/workflows`. A run ends with the PR or a report of why it stopped. After you merge, say so to review the follow-ups.
 
-Every agent can read the task's thread for background. Privacy rests on one convention, not enforced: everything posted is written to stand alone for a stranger. You skim the PR before merging.
+Privacy rests on one convention, not enforced: after the design, nothing reads the thread, and everything published is written to stand alone for a stranger. You skim the PR before merging.
 
 ## Status
 
-A prototype, tested in parts. It hasn't yet run end to end on a real repository.
+A prototype. It hasn't yet run end to end on a real repository.
 
 ## Layout
 
 ```
-shared/orchestration.md    rules for every workflow's orchestrator
-skills/develop/SKILL.md    /dev-work:develop
-workflows/                 plan.js, implement.js, review.js (phase workflows)
+skills/develop/SKILL.md    /dev-work:develop (the orchestrator)
+workflows/execute.js       SDD's controller as a script
 ```

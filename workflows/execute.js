@@ -1,0 +1,218 @@
+export const meta = {
+  name: 'execute',
+  description: 'dev-work: run a plan the way superpowers:subagent-driven-development does, with this script as its controller',
+  whenToUse: 'Started by the dev-work develop skill.',
+  phases: [{ title: 'Setup' }, { title: 'Tasks' }, { title: 'Final review' }],
+}
+
+// args: { repo, planFile, designFile, baseSha }
+// Follows SDD v7 section by section, using its prompt templates, scripts and ledger. Where SDD leaves a
+// call to its controller, a ruler agent makes it. Fix rounds dispatch a fresh implementer with the
+// report file (SDD's fallback when a subagent can't be resumed).
+const A = args
+const SDD = 'the superpowers:subagent-driven-development skill'
+const LOCAL = 'Work only in this checkout: commit on the current branch, never push or touch a remote.'
+const CAP = 5
+const TIERS = ['haiku', 'sonnet', 'opus']
+const up = m => TIERS[Math.min(TIERS.indexOf(m) + 1, TIERS.length - 1)]
+const effort = m => (m === 'opus' ? 'high' : 'medium')
+const atLeast = (m, floor) => TIERS[Math.max(TIERS.indexOf(m), TIERS.indexOf(floor))]
+
+const str = { type: 'string' }, bool = { type: 'boolean' }
+const obj = (props, req = Object.keys(props)) => ({ type: 'object', properties: props, required: req })
+const arr = items => ({ type: 'array', items })
+const SEV = { type: 'string', enum: ['Critical', 'Important', 'Minor'] }
+const FINDING = obj({ id: str, severity: SEV, text: str, plan_mandated: bool }, ['id', 'severity', 'text'])
+const MECH = obj({ head: str, ok: bool, output: str })
+const IMPL = obj({ status: { type: 'string', enum: ['DONE', 'DONE_WITH_CONCERNS', 'NEEDS_CONTEXT', 'BLOCKED'] }, head_sha: str, summary: str, details: str },
+  ['status', 'head_sha', 'summary'])
+const REVIEW = obj({ spec_verdict: { type: 'string', enum: ['pass', 'fail'] }, cannot_verify: arr(str), quality_verdict: { type: 'string', enum: ['Approved', 'Needs fixes'] }, findings: arr(FINDING) })
+const REREVIEW = obj({ results: arr(obj({ id: str, addressed: bool })), new_findings: arr(FINDING), out_of_scope: arr(str) })
+const RULINGS = { rulings: arr(str), stop: bool, stop_reason: str }
+
+// ---------- ledger: lines queue here and are appended by the next mechanics agent ----------
+let ws = null, ledgerFile = null
+const pending = [], rulings = [], parked = [], deferred = [], carry = []
+const note = (...lines) => pending.push(...lines)
+const rule = (...lines) => { rulings.push(...lines); note(...lines) }
+const mech = async (what, label, phase) => {
+  const flush = pending.length ? `First append these lines to ${ledgerFile}, verbatim, one per line:\n${pending.join('\n')}\nThen: ` : ''
+  const r = await agent(`In ${A.repo}: ${flush}${what} Report HEAD, whether it succeeded, and the output.`, { label, phase, schema: MECH, model: 'haiku', effort: 'low' })
+  if (r.ok) pending.length = 0
+  return r
+}
+const fmt = fs => fs.map(f => `${f.id} (${f.severity}): ${f.text}`).join('\n')
+const same = (a, b) => !!a && !!b && (a.startsWith(b) || b.startsWith(a))
+const template = (name, values, skill = SDD) => `Follow the ${name} prompt template from ${skill}, working in ${A.repo}, with: ${Object.entries(values).map(([k, v]) => `${k} = ${v}`).join('; ')}.`
+
+// The ruler makes the calls SDD leaves to its controller.
+const ruler = (question, schema, label, phase) => agent(`You make the calls ${SDD} leaves to its controller, for the plan ${A.planFile} in ${A.repo}. The design ${A.designFile} is the binding authority, the plan is its argument, and your judgment settles what neither answers. Read the code as needed; don't change it.
+Rulings so far:\n${rulings.join('\n') || '(none)'}
+${question}
+Write every decision as "Ruling: <what you decided> — <why> — <what it costs if wrong>". Decide; nobody will answer questions. Set stop only for an irreversible or destructive operation, a security-sensitive action, or a plan so broken that every path forward is a guess, and say why in stop_reason.`,
+  { label, phase, schema, model: 'opus', effort: 'high' })
+
+const result = (status, extra = {}) => ({ status, ...extra, rulings, parked, deferred, carried: carry })
+const stop = async (reason, at) => {
+  note(`Stopped at ${at}: ${reason}`)
+  await mech('nothing else.', 'ledger-stop', at === 'final' ? 'Final review' : 'Tasks')
+  return result('stopped', { at, reason })
+}
+
+// ---------- Setup ----------
+phase('Setup')
+const setup = await agent(`In ${A.repo}: run ${SDD}'s sdd-workspace script with ${A.planFile} and report the directory it prints as workspace. If <workspace>/progress.md exists and its first line names this plan, return its full contents as ledger; otherwise create it containing only the line "# SDD ledger — plan: ${A.planFile}" and return ledger as an empty string. Report HEAD.`,
+  { label: 'workspace', phase: 'Setup', model: 'haiku', effort: 'low', schema: obj({ workspace: str, ledger: str, head: str }) })
+ws = setup.workspace
+ledgerFile = `${ws}/progress.md`
+const prior = setup.ledger || ''
+const done = new Set([...prior.matchAll(/^Task (\d+): complete/gm)].map(m => Number(m[1])))
+rulings.push(...prior.split('\n').filter(l => l.includes('Ruling:')))
+if (prior) log(`Resuming: ${done.size} task(s) complete in the ledger`)
+
+const pre = await ruler(`${/^Pre-flight/m.test(prior) ? `The pre-flight scan is already in the ledger ${ledgerFile}; don't redo it. From it and the plan, return` : `Run SDD's pre-flight scan as its Setup section describes: read the plan once, and the design. Append the scan table, then each ruling beside its row, to the ledger ${ledgerFile} under a line "Pre-flight:". Return`} the task count; the plan's Global Constraints copied verbatim (or the binding requirements from the design if the plan has none); and for each task, the implementer model per SDD's Model Selection (haiku when the task's text contains the complete code, sonnet for prose tasks and integration work, opus for design judgment or broad codebase understanding). Return only the rulings you made now.`,
+  obj({ task_count: { type: 'integer' }, global_constraints: str, task_models: arr(obj({ task: { type: 'integer' }, model: { type: 'string', enum: TIERS } })), ...RULINGS }, ['task_count', 'global_constraints', 'task_models', 'rulings', 'stop']),
+  'pre-flight', 'Setup')
+rulings.push(...pre.rulings)
+if (pre.stop) return await stop(pre.stop_reason, 'pre-flight')
+const modelFor = n => (pre.task_models.find(t => t.task === n) || {}).model || 'sonnet'
+
+// ---------- Tasks ----------
+phase('Tasks')
+const tasks = []
+for (let n = 1; n <= pre.task_count; n++) {
+  if (done.has(n)) continue
+  const prep = await mech(`run ${SDD}'s task-brief script for task ${n} of ${A.planFile}. Put the brief path it prints in output, followed by a newline and the report path named after it the way SDD names report files (…-brief… becomes …-report…).`, `brief-${n}`, 'Tasks')
+  if (!prep.ok) return result('failed', { stage: `brief ${n}`, detail: prep.output })
+  const [brief, report] = prep.output.trim().split('\n').map(s => s.trim())
+  const base = prep.head, entry = { task: n, base, rounds: 0, parked: 0 }
+  let model = modelFor(n)
+  const context = `Task ${n} of ${pre.task_count} in ${A.planFile}.${carry.length ? ` Rulings from earlier tasks that bind this one:\n${carry.join('\n')}` : ''}`
+
+  // 1-2. Dispatch the implementer and handle its report
+  let impl, answer = ''
+  for (let attempt = 1; ; attempt++) {
+    impl = await agent(template('implementer', { 'task': n, 'brief file': brief, 'report file': report, 'directory': A.repo, 'context': context }) +
+      ` ${LOCAL}${answer ? `\nThe controller's answer to your earlier report: ${answer}` : ''}`,
+      { label: `implement-${n}${attempt > 1 ? `-a${attempt}` : ''}`, phase: 'Tasks', schema: IMPL, model, effort: effort(model) })
+    if (impl.status === 'DONE' || impl.status === 'DONE_WITH_CONCERNS') break
+    if (attempt === 3) return await stop(`task ${n}'s implementer still ${impl.status} after 3 dispatches: ${impl.details || impl.summary}`, `task ${n}`)
+    const r = await ruler(`Task ${n}'s implementer (${model}) reported ${impl.status}: ${impl.details || impl.summary}\nBrief: ${brief}. Report: ${report}. Handle it as SDD's "Handle the report" says: give the missing context or your correction of the plan as answer, and set escalate if the task needs more reasoning than ${model} has.`,
+      obj({ answer: str, escalate: bool, ...RULINGS }, ['answer', 'escalate', 'rulings', 'stop']), `rule-${n}-a${attempt}`, 'Tasks')
+    if (r.stop) return await stop(r.stop_reason, `task ${n}`)
+    rule(...r.rulings.map(x => `Task ${n}: ${x}`))
+    if (r.escalate) model = up(model)
+    answer = r.answer
+  }
+  let head = impl.head_sha
+  if (same(head, base)) {
+    note(`Task ${n}: complete (no commits, nothing to review)`)
+    tasks.push({ ...entry, review: 'skipped: no commits' })
+    continue
+  }
+
+  // 3. Review the task
+  const pkg = await mech(`run ${SDD}'s review-package script with ${A.planFile} ${base} ${head}; put the path it prints in output.`, `package-${n}`, 'Tasks')
+  if (!pkg.ok) return result('failed', { stage: `package ${n}`, detail: pkg.output })
+  const reviewer = atLeast(model, 'sonnet')
+  const review = await agent(template('task reviewer', { 'brief file': brief, 'report file': report, 'global constraints': pre.global_constraints, 'base': base, 'head': head, 'diff file': pkg.output.trim() }) +
+    `${impl.status === 'DONE_WITH_CONCERNS' ? ` The implementer reported concerns; judge them with the rest: ${impl.details || impl.summary}` : ''} Ids T${n}-1…; put each "Cannot verify from diff" item in cannot_verify.`,
+    { label: `review-${n}`, phase: 'Tasks', schema: REVIEW, model: reviewer, effort: effort(reviewer) })
+  entry.review = `${review.spec_verdict}, ${review.quality_verdict}`
+  let open = review.findings.filter(f => f.severity !== 'Minor')
+  review.findings.filter(f => f.severity === 'Minor').forEach(f => { deferred.push(`T${n} ${f.id}: ${f.text}`); note(`Task ${n}: minor (deferred): ${f.id} ${f.text}`) })
+
+  // Items the reviewer could not verify, and findings the plan mandates, are the controller's to resolve
+  const mandated = open.filter(f => f.plan_mandated)
+  if (review.cannot_verify.length || mandated.length) {
+    const r = await ruler(`Task ${n} (brief ${brief}, commits ${base}..${head}).${review.cannot_verify.length ? `\nResolve each item the task reviewer could not verify from the diff: check the code, and return each real gap as a gap.\n${review.cannot_verify.join('\n')}` : ''}${mandated.length ? `\nRule on each plan-mandated finding against the plan text that mandates it; return in keep the ids that should go to the fix loop.\n${fmt(mandated)}` : ''}`,
+      obj({ gaps: arr(str), keep: arr(str), ...RULINGS }, ['gaps', 'keep', 'rulings', 'stop']), `resolve-${n}`, 'Tasks')
+    if (r.stop) return await stop(r.stop_reason, `task ${n}`)
+    rule(...r.rulings.map(x => `Task ${n}: ${x}`))
+    open = open.filter(f => !f.plan_mandated || r.keep.includes(f.id)).concat(r.gaps.map((g, i) => ({ id: `T${n}-G${i + 1}`, severity: 'Important', text: g })))
+  }
+
+  // 4. The fix loop: rounds 1-3 on the implementer's model, 4-5 a fresh implementer one tier up
+  for (let round = 1; open.length && round <= CAP; round++) {
+    const fixBase = head
+    const fixModel = round <= 3 ? model : up(model)
+    const fix = await agent(template('implementer', { 'task': n, 'brief file': brief, 'report file': report, 'directory': A.repo, 'context': context }) + ` ${LOCAL}
+${round <= 3 ? `Fix round ${round} of ${CAP}: you already implemented this task; read the report file for what you did.` : `A prior implementer attempted this task ${round - 1} times; you own it now. Read the report file for what was tried.`} Fix these findings, re-run the tests that cover the amended code, append a fix report (covering tests, command, output) to the report file, and commit.
+${fmt(open)}`,
+      { label: `fix-${n}-r${round}`, phase: 'Tasks', schema: IMPL, model: fixModel, effort: effort(fixModel) })
+    head = fix.head_sha
+    if (same(head, fixBase)) { note(`Task ${n}: fix round ${round}/${CAP} (no commits)`); continue }
+    const rpkg = await mech(`run ${SDD}'s review-package script with ${A.planFile} ${fixBase} ${head}; put the path it prints in output.`, `package-${n}-r${round}`, 'Tasks')
+    if (!rpkg.ok) return result('failed', { stage: `package ${n} round ${round}`, detail: rpkg.output })
+    const rrModel = 'sonnet'
+    const rr = await agent(template('re-review', { 'brief file': brief, 'findings': fmt(open), 'report file': report, 'fix base': fixBase, 'head': head, 'diff file': rpkg.output.trim() }) + ` New finding ids T${n}-R${round}-1…; out-of-scope observations in out_of_scope.`,
+      { label: `re-review-${n}-r${round}`, phase: 'Tasks', schema: REREVIEW, model: rrModel, effort: effort(rrModel) })
+    const notAddressed = new Set(rr.results.filter(r => !r.addressed).map(r => r.id))
+    const fresh = rr.new_findings.filter(f => f.severity !== 'Minor')
+    rr.new_findings.filter(f => f.severity === 'Minor').map(f => `${f.id} ${f.text}`).concat(rr.out_of_scope).forEach(t => { deferred.push(`T${n} ${t}`); note(`Task ${n}: minor (deferred): ${t}`) })
+    const before = open.length
+    open = open.filter(f => notAddressed.has(f.id)).concat(fresh)
+    note(`Task ${n}: fix round ${round}/${CAP} (${before - notAddressed.size} addressed, ${open.length} open; commits ${fixBase.slice(0, 7)}..${head.slice(0, 7)})`)
+    entry.rounds = round
+  }
+
+  // The breaker
+  if (open.length) {
+    const r = await ruler(`Task ${n}'s fix loop hit its cap of ${CAP} rounds (brief ${brief}, report ${report}, commits ${base}..${head}). Adjudicate each open finding as SDD's breaker says: park it (the reviewer is wrong or the point is contestable, or it is real but nothing downstream builds on it), or, if it is real and load-bearing, rule on the smallest change that unblocks the dependent work; that ruling is carried into later tasks.
+${fmt(open)}`,
+      obj({ decisions: arr(obj({ id: str, decision: { type: 'string', enum: ['park', 'carry'] }, ruling: str })), ...RULINGS }, ['decisions', 'rulings', 'stop']), `breaker-${n}`, 'Tasks')
+    if (r.stop) return await stop(r.stop_reason, `task ${n}`)
+    for (const d of r.decisions) {
+      const f = open.find(x => x.id === d.id) || { id: d.id, text: '' }
+      if (d.decision === 'park') { rule(`Task ${n}: parked — ${f.id} ${f.text} — ${d.ruling}`); parked.push(`T${n} ${f.id}: ${f.text} — ${d.ruling}`) }
+      else { rule(`Task ${n}: ${d.ruling}`); carry.push(`Task ${n}: ${d.ruling}`) }
+    }
+    rule(...r.rulings.map(x => `Task ${n}: ${x}`))
+    entry.parked = open.length
+  }
+  note(`Task ${n}: complete (commits ${base.slice(0, 7)}..${head.slice(0, 7)}, ${entry.parked ? `${entry.parked} parked` : 'review clean'})`)
+  tasks.push(entry)
+  log(`Task ${n}: ${entry.rounds} fix round(s), ${entry.parked} parked`)
+}
+
+// ---------- Final review ----------
+phase('Final review')
+const fpkg = await mech(`run ${SDD}'s review-package script with ${A.planFile} ${A.baseSha} HEAD; put the path it prints in output.`, 'package-final', 'Final review')
+if (!fpkg.ok) return result('failed', { stage: 'final package', detail: fpkg.output })
+const final = await agent(template('code reviewer', { 'description': `the change implementing the plan ${A.planFile}`, 'plan or requirements': `the plan ${A.planFile} and the design ${A.designFile}`, 'base': A.baseSha, 'head': fpkg.head, 'review package': fpkg.output.trim() }, 'the superpowers:requesting-code-review skill') +
+  ` Triage the deferred-minor and parked lines in the ledger ${ledgerFile}: set must_fix on any that must be fixed before merge (as a Minor finding if it isn't already one). Ids F-1…. Read only.`,
+  { label: 'final-review', phase: 'Final review', model: 'opus', effort: 'high', schema: obj({ summary: str, ready: { type: 'string', enum: ['Yes', 'No', 'With fixes'] }, findings: arr(obj({ id: str, severity: SEV, must_fix: bool, text: str }, ['id', 'severity', 'text'])) }) })
+let finalOpen = final.findings.filter(f => f.severity !== 'Minor' || f.must_fix)
+final.findings.filter(f => f.severity === 'Minor' && !f.must_fix).forEach(f => { deferred.push(`final ${f.id}: ${f.text}`); note(`Final: minor (deferred): ${f.id} ${f.text}`) })
+const surfaced = []
+if (finalOpen.length) {
+  const fixBase = fpkg.head, fixReport = `${ws}/final-fix-report.md`
+  const fix = await agent(`In ${A.repo}: fix these findings from the whole-branch review of the plan ${A.planFile} (design ${A.designFile}) in one pass. Re-run the tests that cover what you change, write a fix report (what changed, covering tests, command, output) to ${fixReport}, and commit. ${LOCAL} Do not dispatch subagents.
+${fmt(finalOpen)}`,
+    { label: 'final-fix', phase: 'Final review', schema: IMPL, model: 'sonnet', effort: 'medium' })
+  if (!same(fix.head_sha, fixBase)) {
+    const rpkg = await mech(`run ${SDD}'s review-package script with ${A.planFile} ${fixBase} ${fix.head_sha}; put the path it prints in output.`, 'package-final-fix', 'Final review')
+    if (!rpkg.ok) return result('failed', { stage: 'final fix package', detail: rpkg.output })
+    const rr = await agent(template('re-review', { 'brief file': A.planFile, 'findings': fmt(finalOpen), 'report file': fixReport, 'fix base': fixBase, 'head': fix.head_sha, 'diff file': rpkg.output.trim() }) + ' New finding ids F-R-1…; out-of-scope observations in out_of_scope.',
+      { label: 'final-re-review', phase: 'Final review', schema: REREVIEW, model: 'sonnet', effort: 'medium' })
+    const notAddressed = new Set(rr.results.filter(r => !r.addressed).map(r => r.id))
+    rr.out_of_scope.forEach(t => { deferred.push(`final ${t}`); note(`Final: minor (deferred): ${t}`) })
+    finalOpen = finalOpen.filter(f => notAddressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
+  }
+  if (finalOpen.length) {
+    const r = await ruler(`The final whole-branch review's single fix wave left these findings open. There is no second wave. Adjudicate each as SDD's breaker says: park it, or, if it is real and load-bearing, rule on it; those are surfaced to the user at finishing.
+${fmt(finalOpen)}`,
+      obj({ decisions: arr(obj({ id: str, decision: { type: 'string', enum: ['park', 'surface'] }, ruling: str })), ...RULINGS }, ['decisions', 'rulings', 'stop']), 'final-breaker', 'Final review')
+    if (r.stop) return await stop(r.stop_reason, 'final')
+    for (const d of r.decisions) {
+      const f = finalOpen.find(x => x.id === d.id) || { id: d.id, text: '' }
+      if (d.decision === 'park') { rule(`Final: parked — ${f.id} ${f.text} — ${d.ruling}`); parked.push(`final ${f.id}: ${f.text} — ${d.ruling}`) }
+      else { rule(`Final: ${d.ruling}`); surfaced.push(`${f.id}: ${f.text} — ${d.ruling}`) }
+    }
+    rule(...r.rulings.map(x => `Final: ${x}`))
+  }
+}
+
+// Finish: everything worth keeping is in this result, so the workspace goes, as SDD says
+const end = await mech(`delete the directory ${ws} (this plan's SDD workspace) and nothing else.`, 'cleanup', 'Final review')
+return result('done', { final_head: end.head, final_review: final.summary, tasks, surfaced, workspace_removed: end.ok })

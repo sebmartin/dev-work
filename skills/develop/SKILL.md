@@ -1,31 +1,53 @@
 ---
 name: develop
-description: The general-purpose dev-work workflow. Takes a thread todo with an approved design from plan to a locally reviewed pull request, with you as orchestrator. Use when the user types /dev-work:develop or asks to develop a task with dev-work, and when they say a dev-work PR has been merged.
+description: Takes a thread todo with a linked design through Superpowers to a pull request ready for human review, with you standing where Superpowers expects a human. Use when the user types /dev-work:develop or asks to develop a todo with dev-work, and when they say a dev-work PR has been merged.
 ---
 
 # dev-work: develop
 
-Plan → implement → review → publish, starting from an approved design. Read `../../shared/orchestration.md` first.
+Superpowers is the process. You stand where it expects a human: you start each step, answer for the user, and write the outcome back to the thread. You don't write code, read diffs or review.
 
-## 1. plan
+## Rules
 
-Run `dev-work:plan` with `{ thread, repo, runDir, designFile, planFile, failureReport? }`.
-Check the plan the way the user would glance at it: does its summary match the design, and are its assumptions acceptable? Record its follow-ups. If it misreads the design, fail (design).
+- **Autonomous once started.** Ask nothing after setup. If something needs the user, stop and report what happened, what was tried and what would fix it.
+- **The design is the handoff.** Work from it, not from the rest of the thread. If you'd need the thread to decide something, the design is missing it: say so in your report.
+- **Nothing private leaves the machine.** Commits and PR text stand alone for a stranger: no names of threads, designs, plans or the people in them, and nothing from their notes. Read every commit message and the PR text before you push.
 
-## 2. implement
+## 1. Setup (the only place to ask)
 
-Run `dev-work:implement` with `{ thread, repo, runDir, planFile, globalConstraints, startTask: 1, taskCount }` (`globalConstraints` from the plan, empty if none).
-- `needs_orchestrator`: answer the coder's question from the design or the thread, or make the call and record it; re-run from that task with `answers`. If only the user can answer, fail (design).
-- `done`: rule on each parked finding: park it with a ruling, or fail (design). A stated reason is not evidence.
-- `failed`: fail (operational) with its reason.
+- **Task:** a thread todo that links to its **design**, an artifact holding the decisions, their motivation and the acceptance criteria. If there is no design, stop: the design comes first, with the user.
+- **Repository and target branch:** infer them from the design and the todo; default to the repository's default branch. Ask only if you can't tell.
+- **Worktree:** with `superpowers:using-git-worktrees`, on a new branch `dev-work/<todo slug>`, never an existing checkout. If that branch already exists, this is a resumed run: reuse its worktree and pick up at the first step that hasn't finished. Record the base sha on the target branch.
+- **Run folder:** the plan goes in a folder that git ignores through the repository's local exclude file (`git rev-parse --git-path info/exclude`), never `.gitignore`.
 
-## 3. review
+## 2. Plan
 
-Run `dev-work:review` with `{ thread, repo, runDir, designFile, planFile, baseSha, branch, title }`. Everything stays local.
-- `ready`: record its follow-ups and refuted blockers.
-- `blocked_at_cap`: fail with the open blockers.
-- `failed`: fail (operational) with its reason.
+Dispatch one subagent (Opus, medium effort) to use `superpowers:writing-plans` on the design:
+- save the plan in the run folder, and don't commit it;
+- the design is decided: plan it, don't redesign it;
+- plan only what the design asks, and list anything else under "## Follow-ups";
+- it may read code and run the repository's existing commands, but not write or run new code;
+- nobody will answer questions: make the call and record it under "## Assumptions".
 
-## 4. publish
+Then read the plan the way the user would: does it match the design, are its assumptions acceptable, and does it carry anything private that could reach a commit? If it misreads the design, stop.
 
-The one step that leaves the machine, done by you. Read the commit messages and the PR description it drafted (`pr_body_file`), then push the branch and open the PR into the target branch with that description. Record the PR in the todo, set Phase to ready, and report: the PR link, a line per task, rulings, follow-ups. The user skims and merges by hand.
+## 3. Execute
+
+Run the `dev-work:execute` workflow with `{ repo: <worktree>, planFile, designFile, baseSha }`. It runs `superpowers:subagent-driven-development` with the script as the controller and a ruler agent making the controller's calls.
+- `done`: carries rulings, parked findings, deferred findings and anything surfaced for a human.
+- `stopped`: one of SDD's stop cases, with the reason. Report it.
+- `failed`: an operational failure, with the stage. Run it again; it resumes from SDD's ledger.
+
+## 4. Finish
+
+Use `superpowers:finishing-a-development-branch` and choose to push and open a pull request into the target branch. Before pushing, read the commit messages. Write the PR text to stand alone, and include anything execute surfaced as needing a human.
+
+## 5. Back to the thread
+
+- **Todo:** the PR link; the rulings, one line each with what they cost if wrong; the follow-ups (the plan's, plus parked and deferred findings).
+- **Design:** rulings that change it go in its decision log, with why.
+- **Report:** the PR link, the rulings, the follow-ups and anything surfaced. The user skims and merges by hand.
+
+## After merge
+
+When the user says it's merged: present the follow-ups and ask which to track (nothing is filed automatically), retire the todo, and offer to remove the worktree and branch.

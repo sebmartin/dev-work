@@ -7,7 +7,7 @@
     {
       "name": "dev-work",
       "source": "./",
-      "description": "Development workflows orchestrated by an agent, with loops in dynamic workflows and Superpowers skills inside. Ships the general-purpose develop workflow: plan, implement and PR review."
+      "description": "Takes a thread todo with a linked design through Superpowers to a PR ready for human review, with an agent orchestrator in the human's place and a dynamic workflow as the subagent-driven-development controller."
     }
   ]
 }
