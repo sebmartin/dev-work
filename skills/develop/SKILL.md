@@ -15,7 +15,7 @@ Superpowers is the process. You stand where it expects a human: you start each s
 
 ## 1. Setup (the only place to ask)
 
-- **Task:** a thread todo that links to its **design**, an artifact holding the decisions, their motivation and the acceptance criteria. If there is no design, stop: the design comes first, with the user.
+- **Task:** a thread todo that links to its **design**, an artifact holding the decisions, their motivation and the acceptance criteria. If there is no design, stop: the design comes first, with the user (`/dev-work:design`).
 - **Repository and target branch:** infer them from the design and the todo; default to the repository's default branch. Ask only if you can't tell.
 - **Worktree:** with `superpowers:using-git-worktrees`, on a new branch `dev-work/<todo slug>`, never an existing checkout. If that branch already exists, this is a resumed run: reuse its worktree and pick up at the first step that hasn't finished. Record the base sha on the target branch.
 - **Run folder:** the plan goes in a folder that git ignores through the repository's local exclude file (`git rev-parse --git-path info/exclude`), never `.gitignore`.
