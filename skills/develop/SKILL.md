@@ -29,11 +29,11 @@ Dispatch one subagent (Opus, medium effort) to use `superpowers:writing-plans` o
 - it may read code and run the repository's existing commands, but not write or run new code;
 - nobody will answer questions: make the call and record it under "## Assumptions".
 
-Then read the plan the way the user would: does it match the design, are its assumptions acceptable, and does it carry anything private that could reach a commit? If it misreads the design, stop.
+Then read the plan the way the user would: does it match the design, are its assumptions acceptable, and does it carry anything private that could reach a commit? If it misreads the design, stop. You may make small edits to the plan where it misses something the design needs; record each as a ruling, with what it costs if wrong.
 
 ## 3. Execute
 
-Run the `dev-work:execute` workflow with `{ repo: <worktree>, planFile, designFile, baseSha }`. It runs `superpowers:subagent-driven-development` with the script as the controller and a ruler agent making the controller's calls.
+Run the `dev-work:execute` workflow with `{ repo: <worktree>, planFile, designFile, baseSha }`. It runs `superpowers:subagent-driven-development` with the script as the controller and a ruler agent making the controller's calls. When you start it, tell the user that anything they type in this session while it runs also reaches the workflow's agents and can derail it, so they should wait for your report.
 - `done`: carries rulings, parked findings, deferred findings and anything surfaced for a human.
 - `stopped`: one of SDD's stop cases, with the reason. Report it.
 - `failed`: an operational failure, with the stage. Run it again; it resumes from SDD's ledger.
