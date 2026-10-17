@@ -18,12 +18,12 @@ Superpowers is the process. You stand where it expects a human: you start each s
 - **Task:** a thread todo that links to its **design**, an artifact holding the decisions, their motivation and the acceptance criteria. If there is no design, stop: the design comes first, with the user (`/dev-work:design`).
 - **Repository and target branch:** infer them from the design and the todo; default to the repository's default branch. Ask only if you can't tell.
 - **Worktree:** with `superpowers:using-git-worktrees`, on a new branch `dev-work/<todo slug>`, never an existing checkout. If that branch already exists, this is a resumed run: reuse its worktree and pick up at the first step that hasn't finished. Record the base sha on the target branch.
-- **Run folder:** the plan goes in a folder that git ignores through the repository's local exclude file (`git rev-parse --git-path info/exclude`), never `.gitignore`.
+- **Run folder:** `.dev-work/` at the root of the worktree, for the plan, evidence files tasks produce, and the PR text. Hide it from git through the repository's local exclude file (`git rev-parse --git-path info/exclude`), never `.gitignore`.
 
 ## 2. Plan
 
 Dispatch one subagent (Opus, medium effort) to use `superpowers:writing-plans` on the design:
-- save the plan in the run folder, and don't commit it;
+- save the plan as `.dev-work/plan.md`, and don't commit it;
 - the design is decided: plan it, don't redesign it;
 - plan only what the design asks, and list anything else under "## Follow-ups";
 - it may read code and run the repository's existing commands, but not write or run new code;
