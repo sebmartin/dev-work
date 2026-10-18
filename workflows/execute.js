@@ -11,6 +11,8 @@ export const meta = {
 // report file (SDD's fallback when a subagent can't be resumed). Reviewers package their own diffs, a
 // Sonnet checker resolves what a reviewer couldn't verify, and the pre-flight result is kept in the ledger.
 const A = args
+// Every agent is a dev-work worker: it gets only its prompt and the files it names, never the threads tools.
+const ag = (prompt, opts = {}) => agent(prompt, { agentType: 'dev-work:worker', ...opts })
 const SDD = 'the superpowers:subagent-driven-development skill'
 const LOCAL = 'Work only in this checkout: commit on the current branch, never push or touch a remote. Add every change as a new commit: never amend, rebase, reset or otherwise rewrite commits, and never force-add ignored files (no `git add -f`); run files stay uncommitted.'
 const CAP = 5
@@ -38,7 +40,7 @@ const note = (...lines) => pending.push(...lines)
 const rule = (...lines) => { rulings.push(...lines); note(...lines) }
 const mech = async (what, label, phase) => {
   const flush = pending.length ? `First append these lines to ${ledgerFile}, verbatim, one per line:\n${pending.join('\n')}\nThen: ` : ''
-  const r = await agent(`In ${A.repo}: ${flush}${what} Report HEAD, whether it succeeded, and the output.`, { label, phase, schema: MECH, model: 'haiku', effort: 'low' })
+  const r = await ag(`In ${A.repo}: ${flush}${what} Report HEAD, whether it succeeded, and the output.`, { label, phase, schema: MECH, model: 'haiku', effort: 'low' })
   if (r.ok) pending.length = 0
   return r
 }
@@ -50,7 +52,7 @@ const fixRange = (fixBase, head, taskBase) => `If ${fixBase} is not an ancestor 
 const template = (name, values, skill = SDD) => `Follow the ${name} prompt template from ${skill}, working in ${A.repo}, with: ${Object.entries(values).map(([k, v]) => `${k} = ${v}`).join('; ')}.`
 
 // The ruler makes the calls SDD leaves to its controller.
-const ruler = (question, schema, label, phase) => agent(`You make the calls ${SDD} leaves to its controller, for the plan ${A.planFile} in ${A.repo}. The design ${A.designFile} is the binding authority, the plan is its argument, and your judgment settles what neither answers. Read the code as needed; don't change it.
+const ruler = (question, schema, label, phase) => ag(`You make the calls ${SDD} leaves to its controller, for the plan ${A.planFile} in ${A.repo}. The design ${A.designFile} is the binding authority, the plan is its argument, and your judgment settles what neither answers. Read the code as needed; don't change it.
 Rulings so far:\n${rulings.join('\n') || '(none)'}
 ${question}
 Write every decision as "Ruling: <what you decided> — <why> — <what it costs if wrong>". Decide; nobody will answer questions. Set stop only for an irreversible or destructive operation, a security-sensitive action, or a plan so broken that every path forward is a guess, and say why in stop_reason.`,
@@ -69,7 +71,7 @@ const stop = async (reason, at) => {
 
 // ---------- Setup ----------
 phase('Setup')
-const setup = await agent(`In ${A.repo}: run ${SDD}'s sdd-workspace script with ${A.planFile} and report the directory it prints as workspace. If <workspace>/progress.md exists and its first line names this plan, return its full contents as ledger; otherwise create it containing only the line "# SDD ledger — plan: ${A.planFile}" and return ledger as an empty string. Report HEAD.`,
+const setup = await ag(`In ${A.repo}: run ${SDD}'s sdd-workspace script with ${A.planFile} and report the directory it prints as workspace. If <workspace>/progress.md exists and its first line names this plan, return its full contents as ledger; otherwise create it containing only the line "# SDD ledger — plan: ${A.planFile}" and return ledger as an empty string. Report HEAD.`,
   { label: 'workspace', phase: 'Setup', model: 'haiku', effort: 'low', schema: obj({ workspace: str, ledger: str, head: str }) })
 ws = setup.workspace
 ledgerFile = `${ws}/progress.md`
@@ -103,7 +105,7 @@ for (let n = 1; n <= pre.task_count; n++) {
   // 1-2. Dispatch the implementer and handle its report
   let impl, answer = ''
   for (let attempt = 1; ; attempt++) {
-    impl = await agent(template('implementer', { 'task': n, 'brief file': brief, 'report file': report, 'directory': A.repo, 'context': context }) +
+    impl = await ag(template('implementer', { 'task': n, 'brief file': brief, 'report file': report, 'directory': A.repo, 'context': context }) +
       ` ${LOCAL}${answer ? `\nThe controller's answer to your earlier report: ${answer}` : ''}`,
       { label: `implement-${n}${attempt > 1 ? `-a${attempt}` : ''}`, phase: 'Tasks', schema: IMPL, model, effort: effort(model) })
     if (impl.status === 'DONE' || impl.status === 'DONE_WITH_CONCERNS') break
@@ -120,7 +122,7 @@ for (let n = 1; n <= pre.task_count; n++) {
 
   // 3. Review the task. A task with no commits (a spike, a measurement) gets its evidence reviewed instead.
   const reviewer = atLeast(model, 'sonnet')
-  const review = await agent(template('task reviewer', { 'brief file': brief, 'report file': report, 'global constraints': pre.global_constraints, 'base': base, 'head': head, 'diff file': evidenceOnly ? 'none' : pkgOf(base, head) }) +
+  const review = await ag(template('task reviewer', { 'brief file': brief, 'report file': report, 'global constraints': pre.global_constraints, 'base': base, 'head': head, 'diff file': evidenceOnly ? 'none' : pkgOf(base, head) }) +
     `${evidenceOnly ? ' This task made no commits: there is no diff. Review the report file and the evidence files it names against the brief instead: were the required steps run, and do the recorded results support what the report claims? Read only.' : ''}${impl.status === 'DONE_WITH_CONCERNS' ? ` The implementer reported concerns; judge them with the rest: ${impl.details || impl.summary}` : ''} Ids T${n}-1…; put each "Cannot verify from diff" item in cannot_verify.`,
     { label: `review-${n}`, phase: 'Tasks', schema: REVIEW, model: reviewer, effort: effort(reviewer) })
   entry.review = `${review.spec_verdict}, ${review.quality_verdict}`
@@ -129,7 +131,7 @@ for (let n = 1; n <= pre.task_count; n++) {
 
   // Items the reviewer could not verify are checked against the code; findings the plan mandates are ruled on
   if (review.cannot_verify.length) {
-    const c = await agent(`In ${A.repo}, task ${n} of the plan ${A.planFile} (brief ${brief}, commits ${base}..${head}). The task reviewer could not verify these requirements from the diff alone. Check each in the code, read only, and return each one that is a real gap, with file:line evidence; leave out the ones the code satisfies.\n${review.cannot_verify.join('\n')}`,
+    const c = await ag(`In ${A.repo}, task ${n} of the plan ${A.planFile} (brief ${brief}, commits ${base}..${head}). The task reviewer could not verify these requirements from the diff alone. Check each in the code, read only, and return each one that is a real gap, with file:line evidence; leave out the ones the code satisfies.\n${review.cannot_verify.join('\n')}`,
       { label: `verify-${n}`, phase: 'Tasks', model: 'sonnet', effort: 'medium', schema: obj({ gaps: arr(str) }) })
     open = open.concat(c.gaps.map((g, i) => ({ id: `T${n}-G${i + 1}`, severity: 'Important', text: g })))
   }
@@ -146,13 +148,13 @@ for (let n = 1; n <= pre.task_count; n++) {
   for (let round = 1; open.length && round <= CAP; round++) {
     const fixBase = head
     const fixModel = round <= 3 ? model : up(model)
-    const fix = await agent(template('implementer', { 'task': n, 'brief file': brief, 'report file': report, 'directory': A.repo, 'context': context }) + ` ${LOCAL}
+    const fix = await ag(template('implementer', { 'task': n, 'brief file': brief, 'report file': report, 'directory': A.repo, 'context': context }) + ` ${LOCAL}
 ${round <= 3 ? `Fix round ${round} of ${CAP}: you already implemented this task; read the report file for what you did.` : `A prior implementer attempted this task ${round - 1} times; you own it now. Read the report file for what was tried.`} Fix these findings, re-run the tests that cover the amended code, append a fix report (covering tests, command, output) to the report file, and commit.
 ${fmt(open)}`,
       { label: `fix-${n}-r${round}`, phase: 'Tasks', schema: IMPL, model: fixModel, effort: effort(fixModel) })
     head = fix.head_sha
     const rrModel = 'sonnet'
-    const rr = await agent(template('re-review', { 'brief file': brief, 'findings': fmt(open), 'report file': report, 'fix base': fixBase, 'head': head, 'diff file': pkgOf(fixBase, head) }) + ` ${fixRange(fixBase, head, base)} New finding ids T${n}-R${round}-1…; out-of-scope observations in out_of_scope.`,
+    const rr = await ag(template('re-review', { 'brief file': brief, 'findings': fmt(open), 'report file': report, 'fix base': fixBase, 'head': head, 'diff file': pkgOf(fixBase, head) }) + ` ${fixRange(fixBase, head, base)} New finding ids T${n}-R${round}-1…; out-of-scope observations in out_of_scope.`,
       { label: `re-review-${n}-r${round}`, phase: 'Tasks', schema: REREVIEW, model: rrModel, effort: effort(rrModel) })
     const notAddressed = new Set(rr.results.filter(r => !r.addressed).map(r => r.id))
     const fresh = rr.new_findings.filter(f => f.severity !== 'Minor')
@@ -186,7 +188,7 @@ ${fmt(open)}`,
 
 // ---------- Final review ----------
 phase('Final review')
-const final = await agent(template('code reviewer', { 'description': `the change implementing the plan ${A.planFile}`, 'plan or requirements': `the plan ${A.planFile} and the design ${A.designFile}`, 'base': A.baseSha, 'head': lastHead, 'review package': pkgOf(A.baseSha, lastHead) }, 'the superpowers:requesting-code-review skill') +
+const final = await ag(template('code reviewer', { 'description': `the change implementing the plan ${A.planFile}`, 'plan or requirements': `the plan ${A.planFile} and the design ${A.designFile}`, 'base': A.baseSha, 'head': lastHead, 'review package': pkgOf(A.baseSha, lastHead) }, 'the superpowers:requesting-code-review skill') +
   ` Triage the deferred-minor and parked lines in the ledger ${ledgerFile}: set must_fix on any that must be fixed before merge (as a Minor finding if it isn't already one). Ids F-1…. Read only.`,
   { label: 'final-review', phase: 'Final review', model: 'opus', effort: 'high', schema: obj({ summary: str, ready: { type: 'string', enum: ['Yes', 'No', 'With fixes'] }, findings: arr(obj({ id: str, severity: SEV, must_fix: bool, text: str }, ['id', 'severity', 'text'])) }) })
 let finalOpen = final.findings.filter(f => f.severity !== 'Minor' || f.must_fix)
@@ -194,10 +196,10 @@ final.findings.filter(f => f.severity === 'Minor' && !f.must_fix).forEach(f => {
 const surfaced = []
 if (finalOpen.length) {
   const fixBase = lastHead
-  const fix = await agent(`In ${A.repo}: fix these findings from the whole-branch review of the plan ${A.planFile} (design ${A.designFile}) in one pass. Re-run the tests that cover what you change, and commit. Write a fix report (what changed, covering tests, command, output) to a new file in the system's temporary directory, outside the repository, and return its path as report_path. ${LOCAL} Do not dispatch subagents.
+  const fix = await ag(`In ${A.repo}: fix these findings from the whole-branch review of the plan ${A.planFile} (design ${A.designFile}) in one pass. Re-run the tests that cover what you change, and commit. Write a fix report (what changed, covering tests, command, output) to a new file in the system's temporary directory, outside the repository, and return its path as report_path. ${LOCAL} Do not dispatch subagents.
 ${fmt(finalOpen)}`,
     { label: 'final-fix', phase: 'Final review', schema: obj({ ...IMPL.properties, report_path: str }, ['status', 'head_sha', 'summary', 'report_path']), model: 'sonnet', effort: 'medium' })
-  const rr = await agent(template('re-review', { 'brief file': A.planFile, 'findings': fmt(finalOpen), 'report file': fix.report_path, 'fix base': fixBase, 'head': fix.head_sha, 'diff file': pkgOf(fixBase, fix.head_sha) }) + ` ${fixRange(fixBase, fix.head_sha, A.baseSha)} New finding ids F-R-1…; out-of-scope observations in out_of_scope.`,
+  const rr = await ag(template('re-review', { 'brief file': A.planFile, 'findings': fmt(finalOpen), 'report file': fix.report_path, 'fix base': fixBase, 'head': fix.head_sha, 'diff file': pkgOf(fixBase, fix.head_sha) }) + ` ${fixRange(fixBase, fix.head_sha, A.baseSha)} New finding ids F-R-1…; out-of-scope observations in out_of_scope.`,
     { label: 'final-re-review', phase: 'Final review', schema: REREVIEW, model: 'sonnet', effort: 'medium' })
   const notAddressed = new Set(rr.results.filter(r => !r.addressed).map(r => r.id))
   rr.out_of_scope.forEach(t => { deferred.push(`final ${t}`); note(`Final: minor (deferred): ${t}`) })

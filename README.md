@@ -21,13 +21,13 @@ You merge by hand.
 ## Use
 
 ```
-/dev-work:design <thread todo>
-/dev-work:develop <thread todo>
+/dev-work:design <thread todo>     # in a session in the workspace, with you
+/dev-work:develop <thread todo>    # in a new session started where your repositories live, not the workspace
 ```
 
-Watch the execute step with `/workflows`. A run ends with the PR or a report of why it stopped. After you merge, say so to review the follow-ups.
+Develop stops if its session started inside the workspace: the agents it starts would be given the workspace's instructions. Watch the execute step with `/workflows`. A run ends with the PR or a report of why it stopped. After you merge, say so to review the follow-ups.
 
-Privacy rests on one convention, not enforced: after the design, nothing reads the thread, and everything published is written to stand alone for a stranger. You skim the PR before merging.
+Privacy rests on two things. The agents doing the work never get a path into the workspace: develop stages the design and its inputs into the worktree's `.dev-work/`, and every agent is a `dev-work:worker`, which can't use the threads tools. And everything published is written to stand alone for a stranger. You skim the PR before merging.
 
 ## Status
 
@@ -38,5 +38,6 @@ A prototype. It hasn't yet run end to end on a real repository.
 ```
 skills/design/SKILL.md     /dev-work:design (brainstorming, with you)
 skills/develop/SKILL.md    /dev-work:develop (the orchestrator)
+agents/worker.md           the agent every dev-work worker runs as
 workflows/execute.js       SDD's controller as a script
 ```

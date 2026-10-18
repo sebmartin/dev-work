@@ -20,12 +20,13 @@ Use `superpowers:brainstorming` on the todo's intent, with these preferences:
 2. **What it holds:** brainstorming's written design (intent and why, goals and non-goals, constraints, the decided parts of the how, what's left to the builder), the acceptance criteria, the target repository and branch if known, and a closing `## Decision log` section, empty to start, where later rulings that change the design are recorded with their reason.
 3. **After approval:** don't invoke `superpowers:writing-plans`. Planning starts with `/dev-work:develop`.
 
-The design is read by agents that never see the thread, so it has to stand on its own: no references to notes, sessions or other artifacts that the builder would need to follow. When the builder needs a file from the thread (data, fixtures, examples), give its full path so it can be opened from anywhere.
+The design is read by agents that never see the thread, so it has to stand on its own: no references to notes, sessions or other artifacts, and no paths into the workspace or a thread. When the builder needs a file from the thread (data, fixtures, examples), the design names it only as an input, `inputs/<name>`, with a line on what it is; the todo's Inputs list says which thread file it is, and develop stages it.
 
 When the builder check changes the design, reread the whole document before handing it over, and fix anything those changes left stale.
 
 ## After
 
 1. Leave the todo as the intent plus a one-line link to the design. If the todo carried design content of its own (sections on how to build it, acceptance criteria), that content now lives in the design: remove it from the todo, so there is one source.
-2. Save the thread's session with the ai-workspace threads skill, without asking: the user is about to clear this conversation.
-3. Tell the user the design is ready and the session saved, and that the next step is a fresh session (`/clear` in a terminal, a new conversation elsewhere) so the orchestrator starts with only the design, then `/dev-work:develop <todo>`.
+   If the design names inputs, add an `## Inputs` list to the todo, one line per input: `inputs/<name>` ← the thread file it comes from.
+2. Save the thread's session with the ai-workspace threads skill, without asking: the user is about to leave this conversation.
+3. Tell the user the design is ready and the session saved, and that the next step is a new session started in the directory that holds their repositories, not the workspace, then `/dev-work:develop <todo>`: the orchestrator starts with only the design, and the agents it starts aren't given the workspace's instructions.
