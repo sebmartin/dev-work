@@ -83,7 +83,13 @@ Then start a new session in the directory that holds your code repositories, not
 /dev-work:develop <todo>
 ```
 
-You can follow the implementation step with `/workflows`. The run ends with a pull request, or with a report explaining why it stopped. Don't type into the session while the workflow is running, because messages typed then also reach the workflow's agents. After you merge, tell develop, so it can list the follow-ups and remove the worktree.
+You can follow the implementation step with `/workflows`. The run ends with a pull request, or with a report explaining why it stopped. Don't type into the session while the workflow is running, because messages typed then also reach the workflow's agents. Run the same command again later and develop picks up where the todo stands:
+
+- **After you review the pull request** and leave comments or ask for changes, it fixes them on the same branch, has the fixes reviewed, shows you what changed and asks before pushing and replying to your comments.
+- **If a run stopped or failed,** it resumes. If it stopped because the design was missing something, fix the design with `/dev-work:design` first, and develop starts again on a new branch.
+- **After you merge,** it lists the follow-ups for you to keep as todos, retires the todo and removes the worktree. The branch is kept.
+
+If the repository has no pull request template, develop uses its own, `templates/pr-template.md`. To use your own instead, put it at `~/.claude/dev-work/pr-template.md`.
 
 ## Files
 
@@ -92,4 +98,5 @@ skills/design/SKILL.md     /dev-work:design
 skills/develop/SKILL.md    /dev-work:develop
 agents/worker.md           the agent type used for planning, implementing and reviewing
 workflows/execute.js       the execute workflow
+templates/pr-template.md   the default pull request description
 ```

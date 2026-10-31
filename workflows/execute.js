@@ -2,10 +2,11 @@ export const meta = {
   name: 'execute',
   description: 'dev-work: run a plan the way superpowers:subagent-driven-development does, with this script as its controller',
   whenToUse: 'Started by the dev-work develop skill.',
-  phases: [{ title: 'Setup' }, { title: 'Tasks' }, { title: 'Final review' }],
+  phases: [{ title: 'Setup' }, { title: 'Tasks' }, { title: 'Final review' }, { title: 'Review feedback' }],
 }
 
-// args: { repo, planFile, designFile, baseSha }
+// args: { repo, planFile, designFile, baseSha, feedback?, round? }
+// With feedback (a list of { id, text } from a human review of the PR), it runs only fix rounds on that feedback.
 // Follows SDD v7 section by section, using its prompt templates, scripts and ledger. Where SDD leaves a
 // call to its controller, a ruler agent makes it. Fix rounds dispatch a fresh implementer with the
 // report file (SDD's fallback when a subagent can't be resumed). Reviewers package their own diffs, a
@@ -79,6 +80,46 @@ const prior = setup.ledger || ''
 const done = new Set([...prior.matchAll(/^Task (\d+): complete/gm)].map(m => Number(m[1])))
 rulings.push(...prior.split('\n').filter(l => l.includes('Ruling:')))
 if (prior) log(`Resuming: ${done.size} task(s) complete in the ledger`)
+
+// ---------- Review feedback: fix rounds on a human's review of the PR ----------
+if (A.feedback) {
+  phase('Review feedback')
+  const R = A.round || 1, report = `${A.repo}/.dev-work/round-${R}-report.md`
+  let open = A.feedback.map((f, i) => ({ id: f.id || `PR${R}-${i + 1}`, severity: 'Important', text: f.text }))
+  let head = setup.head
+  const outcome = {}
+  for (let round = 1; open.length && round <= CAP; round++) {
+    const fixBase = head, fixModel = round <= 3 ? 'sonnet' : 'opus'
+    const fix = await ag(`In ${A.repo}: a reviewer left this feedback on the pull request for this branch (plan ${A.planFile}, design ${A.designFile}). ${round <= 3 ? `Fix round ${round} of ${CAP}.` : `Earlier attempts are recorded in ${report}; you own the remaining items now.`} Address each item, re-run the tests that cover what you change, append a fix report (per item: what changed, or why nothing should change, with evidence; covering tests, command, output) to ${report}, and commit. If an item is wrong or would contradict the design, don't change code for it: explain why in the report. ${LOCAL} Do not dispatch subagents.
+${fmt(open)}`,
+      { label: `feedback-fix-r${round}`, phase: 'Review feedback', schema: IMPL, model: fixModel, effort: effort(fixModel) })
+    head = fix.head_sha
+    const rr = await ag(template('re-review', { 'brief file': A.planFile, 'findings': fmt(open), 'report file': report, 'fix base': fixBase, 'head': head, 'diff file': pkgOf(fixBase, head) }) + ` ${fixRange(fixBase, head, fixBase)} A finding counts as addressed if it was fixed, or if the report shows with evidence that it should not change. New finding ids PR${R}-R${round}-1…; out-of-scope observations in out_of_scope.`,
+      { label: `feedback-re-review-r${round}`, phase: 'Review feedback', schema: REREVIEW, model: 'sonnet', effort: 'medium' })
+    const notAddressed = new Set(rr.results.filter(r => !r.addressed).map(r => r.id))
+    open.filter(f => !notAddressed.has(f.id)).forEach(f => { outcome[f.id] = 'addressed' })
+    rr.out_of_scope.forEach(t => { deferred.push(`round ${R} ${t}`); note(`Round ${R}: minor (deferred): ${t}`) })
+    const before = open.length
+    open = open.filter(f => notAddressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
+    note(`Round ${R}: fix round ${round}/${CAP} (${before - notAddressed.size} addressed, ${open.length} open; commits ${fixBase.slice(0, 7)}..${head.slice(0, 7)})`)
+  }
+  const surfaced = []
+  if (open.length) {
+    const r = await ruler(`Review round ${R} on the pull request hit its cap of ${CAP} fix rounds (report ${report}). Adjudicate each open item as SDD's breaker says: park it (the comment is wrong or contestable, or real but not needed for this change), or surface it for the human, with your ruling.
+${fmt(open)}`,
+      obj({ decisions: arr(obj({ id: str, decision: { type: 'string', enum: ['park', 'surface'] }, ruling: str })), ...RULINGS }, ['decisions', 'rulings', 'stop']), `feedback-breaker`, 'Review feedback')
+    if (r.stop) return await stop(r.stop_reason, `round ${R}`)
+    for (const d of r.decisions) {
+      const f = open.find(x => x.id === d.id) || { id: d.id, text: '' }
+      outcome[d.id] = `${d.decision}: ${d.ruling}`
+      if (d.decision === 'park') { rule(`Round ${R}: parked — ${f.id} ${f.text} — ${d.ruling}`); parked.push(`round ${R} ${f.id}: ${f.text} — ${d.ruling}`) }
+      else { rule(`Round ${R}: ${d.ruling}`); surfaced.push(`${f.id}: ${f.text} — ${d.ruling}`) }
+    }
+    rule(...r.rulings.map(x => `Round ${R}: ${x}`))
+  }
+  if (pending.length) await mech('nothing else.', 'ledger-round', 'Review feedback')
+  return result('done', { final_head: head, round: R, report, outcome, surfaced })
+}
 
 const saved = prior.match(/^Pre-flight result: (.*)$/m)
 const pre = saved ? { ...JSON.parse(saved[1]), rulings: [], stop: false } : await ruler(`${/^Pre-flight/m.test(prior) ? `The pre-flight scan is already in the ledger ${ledgerFile}; don't redo it. From it and the plan, return` : `Run SDD's pre-flight scan as its Setup section describes: read the plan once, and the design. Append the scan table, then each ruling beside its row, to the ledger ${ledgerFile} under a line "Pre-flight:". Return`} the task count; the plan's Global Constraints copied verbatim (or the binding requirements from the design if the plan has none); and for each task, the implementer model per SDD's Model Selection (haiku when the task's text contains the complete code, sonnet for prose tasks and integration work, opus for design judgment or broad codebase understanding). Return only the rulings you made now.`,
