@@ -11,6 +11,25 @@ It builds on two other plugins:
 
 There are two commands.
 
+```mermaid
+flowchart TD
+    T["Todo in a thread"] --> D["/dev-work:design, with you, drawing on the thread"]
+    D --> DS["Design saved in the thread"]
+    DS --> S["/dev-work:develop: new worktree, design and inputs copied into .dev-work/"]
+    S --> P["Plan written from the design"]
+    P --> I
+    subgraph E["execute workflow, one task at a time"]
+        I["Implement the task"] --> R["Review the task"]
+        R -->|"findings"| F["Fix, up to 5 rounds"]
+        F --> R
+        R -->|"clean, next task"| I
+    end
+    R -->|"all tasks done"| FR["Review the whole branch"]
+    FR --> PR["Push and open a pull request"]
+    PR --> W["Decisions and follow-ups written to the thread"]
+    PR --> M["You review and merge"]
+```
+
 `/dev-work:design <todo>` is the part you do with Claude. It runs Superpowers' brainstorming skill on the todo. Claude asks you questions, writes a design (what to build and why, the decisions made, and the acceptance criteria), and has a separate agent check that the design is complete enough to plan from. The design is saved in the thread and linked from the todo. Nothing is written to the code repository.
 
 `/dev-work:develop <todo>` does the rest and asks you nothing after setup:
