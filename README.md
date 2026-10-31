@@ -12,22 +12,38 @@ It builds on two other plugins:
 There are two commands.
 
 ```mermaid
-flowchart TD
-    T["Todo in a thread"] --> D["/dev-work:design, with you, drawing on the thread"]
-    D --> DS["Design saved in the thread"]
-    DS --> S["/dev-work:develop: new worktree, design and inputs copied into .dev-work/"]
-    S --> P["Plan written from the design"]
-    P --> I
-    subgraph E["execute workflow, one task at a time"]
-        I["Implement the task"] --> R["Review the task"]
-        R -->|"findings"| F["Fix, up to 5 rounds"]
-        F --> R
-        R -->|"clean, next task"| I
+sequenceDiagram
+    actor You
+    participant T as Thread
+    participant D as Design session
+    participant O as Orchestrator
+    participant W as Workers
+    participant G as GitHub
+
+    You->>D: /dev-work:design with a todo
+    D->>T: Read notes, decisions and research
+    loop Until you approve
+        D->>You: One question at a time, then a draft
+        You-->>D: Answers and corrections
     end
-    R -->|"all tasks done"| FR["Review the whole branch"]
-    FR --> PR["Push and open a pull request"]
-    PR --> W["Decisions and follow-ups written to the thread"]
-    PR --> M["You review and merge"]
+    D->>T: Save the design, link it from the todo
+
+    You->>O: /dev-work:develop with the todo, in a new session
+    O->>T: Read the todo and its design
+    O->>O: New worktree, copy the design and inputs into .dev-work/
+    O->>W: Write a plan from the design
+    W-->>O: Plan
+    loop Each task in the plan
+        O->>W: Implement the task
+        O->>W: Review the task
+        opt Findings, up to 5 fix rounds
+            O->>W: Fix, then review the fix
+        end
+    end
+    O->>W: Review the whole branch
+    O->>G: Push the branch, open a pull request
+    O->>T: Write the PR link, decisions and follow-ups to the todo
+    You->>G: Review and merge
 ```
 
 `/dev-work:design <todo>` is the part you do with Claude. It runs Superpowers' brainstorming skill on the todo. Claude asks you questions, writes a design (what to build and why, the decisions made, and the acceptance criteria), and has a separate agent check that the design is complete enough to plan from. The design is saved in the thread and linked from the todo. Nothing is written to the code repository.
