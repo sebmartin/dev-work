@@ -14,7 +14,7 @@ const A = args
 // Every agent is a dev-work worker: it gets only its prompt and the files it names, never the threads tools.
 const ag = (prompt, opts = {}) => agent(prompt, { agentType: 'dev-work:worker', ...opts })
 const SDD = 'the superpowers:subagent-driven-development skill'
-const LOCAL = 'Work only in this checkout: commit on the current branch, never push or touch a remote. Add every change as a new commit: never amend, rebase, reset or otherwise rewrite commits, and never force-add ignored files (no `git add -f`); run files stay uncommitted.'
+const LOCAL = 'Work only in this checkout: commit on the current branch, never push or touch a remote. Add every change as a new commit: never amend, rebase, reset or otherwise rewrite commits, and never force-add ignored files (no `git add -f`); run files stay uncommitted. Put any scratch files in .dev-work/scratch/ in this checkout, never in /tmp or anywhere else.'
 const CAP = 5
 const TIERS = ['haiku', 'sonnet', 'opus']
 const up = m => TIERS[Math.min(TIERS.indexOf(m) + 1, TIERS.length - 1)]
@@ -195,11 +195,12 @@ let finalOpen = final.findings.filter(f => f.severity !== 'Minor' || f.must_fix)
 final.findings.filter(f => f.severity === 'Minor' && !f.must_fix).forEach(f => { deferred.push(`final ${f.id}: ${f.text}`); note(`Final: minor (deferred): ${f.id} ${f.text}`) })
 const surfaced = []
 if (finalOpen.length) {
-  const fixBase = lastHead
-  const fix = await ag(`In ${A.repo}: fix these findings from the whole-branch review of the plan ${A.planFile} (design ${A.designFile}) in one pass. Re-run the tests that cover what you change, and commit. Write a fix report (what changed, covering tests, command, output) to a new file in the system's temporary directory, outside the repository, and return its path as report_path. ${LOCAL} Do not dispatch subagents.
+  const fixBase = lastHead, fixReport = `${A.repo}/.dev-work/final-fix-report.md`
+  const fix = await ag(`In ${A.repo}: fix these findings from the whole-branch review of the plan ${A.planFile} (design ${A.designFile}) in one pass. Re-run the tests that cover what you change, write a fix report (what changed, covering tests, command, output) to ${fixReport}, and commit. ${LOCAL} Do not dispatch subagents.
 ${fmt(finalOpen)}`,
-    { label: 'final-fix', phase: 'Final review', schema: obj({ ...IMPL.properties, report_path: str }, ['status', 'head_sha', 'summary', 'report_path']), model: 'sonnet', effort: 'medium' })
-  const rr = await ag(template('re-review', { 'brief file': A.planFile, 'findings': fmt(finalOpen), 'report file': fix.report_path, 'fix base': fixBase, 'head': fix.head_sha, 'diff file': pkgOf(fixBase, fix.head_sha) }) + ` ${fixRange(fixBase, fix.head_sha, A.baseSha)} New finding ids F-R-1…; out-of-scope observations in out_of_scope.`,
+    { label: 'final-fix', phase: 'Final review', schema: IMPL, model: 'sonnet', effort: 'medium' })
+  lastHead = fix.head_sha
+  const rr = await ag(template('re-review', { 'brief file': A.planFile, 'findings': fmt(finalOpen), 'report file': fixReport, 'fix base': fixBase, 'head': fix.head_sha, 'diff file': pkgOf(fixBase, fix.head_sha) }) + ` ${fixRange(fixBase, fix.head_sha, A.baseSha)} New finding ids F-R-1…; out-of-scope observations in out_of_scope.`,
     { label: 'final-re-review', phase: 'Final review', schema: REREVIEW, model: 'sonnet', effort: 'medium' })
   const notAddressed = new Set(rr.results.filter(r => !r.addressed).map(r => r.id))
   rr.out_of_scope.forEach(t => { deferred.push(`final ${t}`); note(`Final: minor (deferred): ${t}`) })
@@ -218,6 +219,6 @@ ${fmt(finalOpen)}`,
   }
 }
 
-// Finish: everything worth keeping is in this result, so the workspace goes, as SDD says
-const end = await mech(`delete the directory ${ws} (this plan's SDD workspace) and nothing else.`, 'cleanup', 'Final review')
-return result('done', { final_head: end.head, final_review: final.summary, tasks, surfaced, workspace_removed: end.ok })
+// Finish: the run's files stay in the worktree (.dev-work/ and SDD's workspace) until the worktree is removed
+if (pending.length) await mech('nothing else.', 'ledger-final', 'Final review')
+return result('done', { final_head: lastHead, final_review: final.summary, tasks, surfaced })

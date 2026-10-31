@@ -57,4 +57,4 @@ Whichever way the run ends (finished after the write-back, or stopped or failed 
 
 ## After merge
 
-When the user says it's merged: present the follow-ups and ask which to track (nothing is filed automatically), retire the todo, and offer to remove the worktree and branch, from outside the worktree.
+When the user says it's merged: present the follow-ups and ask which to track (nothing is filed automatically), retire the todo, and offer to remove the worktree, from outside it. That one step removes everything the run left behind (`.dev-work/` and SDD's files are inside it); keep the branch.
