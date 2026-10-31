@@ -1,6 +1,6 @@
 {
   "name": "dev-work",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Takes a thread todo with a linked design through Superpowers to a PR ready for human review, with an agent orchestrator in the human's place and a dynamic workflow as the subagent-driven-development controller.",
   "author": {
     "name": "Seb Martin"
