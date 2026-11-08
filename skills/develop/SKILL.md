@@ -24,7 +24,7 @@ Each todo developed with dev-work has a folder in its thread, `artifacts/dev-wor
 - `log.md`: what develop did, which you keep. Make it on the first run:
 
 ```
-# <todo title>
+# Log
 
 Status: <one line: Running, PR open, Stopped: <reason and what would fix it>, Failed at <stage>: <reason>, Merged, Closed>
 PR: <link, or none yet>
