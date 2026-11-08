@@ -102,7 +102,7 @@ The user has reviewed the PR and asked for changes, as review comments on the PR
 
 1. Recreate and enter the worktree (section 2). Collect the feedback since the last round: the PR's reviews and review comments (with `gh`), plus anything the user told you. Give each item an id.
 2. If an item would change what the design says, put it to the user plainly and wait. Record their decision in `design.md`'s decision log before launching.
-3. Launch `dev-work:execute` with `{ design, inputs, pr_template, base, feedback: [{ id, text }], round: <n>, pr: <the PR's current description>, head: <the branch's current commit id> }`. It fixes, reviews the fixes, and returns `replies` (one per item) and `pr_body` (empty unless the description should change).
+3. Launch `dev-work:execute` with `{ design, inputs, pr_template, base, feedback: [{ id, text }], round: <n>, pr: <the PR's current description: its text, verbatim, not a path to it>, head: <the branch's current commit id> }`. It fixes, reviews the fixes, and returns `replies` (one per item) and `pr_body` (empty unless the description should change).
 4. Show the user what changed, item by item, and ask whether to push. This is the one question a round asks, because pushing and replying publish on the user's behalf. If they say yes: read the replies for anything private, push, update the PR description if `pr_body` isn't empty, and post each reply on its comment.
 5. Add the round to `log.md`'s History as `<date>, review round <n>: <link to the review on GitHub>. <what changed>; pushed` (or `not pushed`). Add the round's `deferred`, `parked` and `surfaced` items to Not fixed in this PR.
 

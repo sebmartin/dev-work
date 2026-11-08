@@ -46,7 +46,9 @@ const IMPL = obj({
   report: { type: 'string', description: 'the full report described under Report Format' },
 }, ['status', 'head_sha', 'summary', 'report'])
 const REVIEW = obj({ spec_verdict: { type: 'string', enum: ['pass', 'fail'] }, cannot_verify: arr(str), quality_verdict: { type: 'string', enum: ['Approved', 'Needs fixes'] }, findings: arr(FINDING) })
-const REREVIEW = obj({ results: arr(obj({ id: str, addressed: bool })), new_findings: arr(FINDING), out_of_scope: arr(str) })
+const REREVIEW = obj({ results: arr(obj({ id: str, addressed: bool, evidence: { type: 'string', description: 'file:line showing the fix, or the evidence that it should not change' } })), new_findings: arr(FINDING), out_of_scope: arr(str) })
+// A finding counts as addressed only with evidence: a bare "addressed" from a quick look doesn't close it.
+const closed = rr => new Set(rr.results.filter(r => r.addressed && (r.evidence || '').trim()).map(r => r.id))
 const RULINGS = { rulings: arr(str), stop: bool, stop_reason: str }
 
 const LOCAL = 'Work only in this checkout, your current directory: commit on the current branch, never push or touch a remote. Add every change as a new commit: never amend, rebase, reset or otherwise rewrite commits, and never force-add ignored files (no `git add -f`). Put any scratch files in .dev-work/scratch/ in this checkout, never anywhere else. Write commit messages for a stranger: what changed and why, in their own terms.'
@@ -239,7 +241,7 @@ The implementer re-ran the tests covering the amended code and reported the resu
 
 ## Output
 
-results: each finding's id with addressed true or false. new_findings: anything the fix itself broke or introduced, with severity and file:line, ids ${idPrefix}1, ${idPrefix}2 and so on. out_of_scope: issues entirely outside the fix diff.`
+results: each finding's id, addressed true or false, and evidence: the file:line that shows it fixed, or the report's evidence that it should not change. A finding with no evidence stays open. new_findings: anything the fix itself broke or introduced, with severity and file:line, ids ${idPrefix}1, ${idPrefix}2 and so on. out_of_scope: issues entirely outside the fix diff.`
 
 const branchReviewerPrompt = ({ planText, base, head, triage }) => `You are a Senior Code Reviewer with expertise in software architecture, design patterns, and best practices. Your job is to review completed work against its design and plan and identify issues before it merges.
 
@@ -333,7 +335,7 @@ const fixLoop = async ({ open, head, model, label, phase, fixPrompt, task, idPre
       { label: `${label}-re-review-r${round}`, phase, schema: REREVIEW, model: 'sonnet', effort: 'medium' })
     if (!rr) return { open, head, failed: `${label} re-review round ${round}` }
     // A finding counts as addressed only if the re-review says so: one it skips stays open.
-    const addressed = new Set(rr.results.filter(r => r.addressed).map(r => r.id))
+    const addressed = closed(rr)
     rr.new_findings.filter(f => f.severity === 'Minor').map(f => `${f.id} ${f.text}`).concat(rr.out_of_scope).forEach(onDeferred)
     const before = open.length
     open = open.filter(f => !addressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
@@ -410,7 +412,7 @@ Return in report what changed per finding, the covering tests, the command and t
   const rr = await ag(reReviewPrompt({ task: 'Findings that were going to be left out of the pull request, fixed because they cause real harm.', findings: fmt(fixList), reports: fix.report, fixBase: head, head: fix.head_sha, idPrefix: 'D-R-' }),
     { label: 'deferral-re-review', phase: phaseName, schema: REREVIEW, model: 'sonnet', effort: 'medium' })
   if (!rr) return { head: fix.head_sha, failed: 'deferral re-review' }
-  const addressed = new Set(rr.results.filter(r => r.addressed).map(r => r.id))
+  const addressed = closed(rr)
   const left = fixList.filter(f => !addressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
   if (left.length) return { head: fix.head_sha, stop: `These findings cause real harm and are still open after a fix:\n${fmt(left)}` }
   rr.new_findings.filter(f => f.severity === 'Minor').map(f => `${f.id} ${f.text}`).concat(rr.out_of_scope).forEach(x => deferred.push(`${x} (found after the deferral check, not assessed)`))
@@ -712,7 +714,7 @@ Return in report what changed per finding, the covering tests, the command and t
   const rr = await ag(reReviewPrompt({ task: 'The whole branch, reviewed against the design and plan.', findings: fmt(finalOpen), reports: fix.report, fixBase, head: fix.head_sha, idPrefix: 'F-R-' }),
     { label: 'final-re-review', phase: 'Final review', schema: REREVIEW, model: 'sonnet', effort: 'medium' })
   if (!rr) return result('failed', { stage: 'final re-review' })
-  const addressed = new Set(rr.results.filter(r => r.addressed).map(r => r.id))
+  const addressed = closed(rr)
   rr.new_findings.filter(f => f.severity === 'Minor').map(f => `${f.id} ${f.text}`).concat(rr.out_of_scope).forEach(x => deferred.push(`final ${x}`))
   finalOpen = finalOpen.filter(f => !addressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
   if (finalOpen.length) {
