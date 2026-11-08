@@ -2,9 +2,9 @@
 
 dev-work is a Claude Code plugin for doing development work with agents. You describe a change and work out its design with Claude. dev-work then plans and implements the change, reviews the result, and opens a pull request for you to review and merge.
 
-It builds on two other plugins:
+It draws on two other plugins:
 
-- [Superpowers](https://github.com/obra/superpowers) provides the development process: brainstorming a design, writing a plan, and implementing the plan task by task with a separate agent reviewing each task. dev-work runs Superpowers' brainstorming and plan-writing skills, carries out the plan with its own workflow and prompts adapted from Superpowers', and makes the decisions that Superpowers normally asks a person to make.
+- [Superpowers](https://github.com/obra/superpowers) is where the development process comes from: brainstorming a design, writing a plan, and implementing the plan task by task with a separate agent reviewing each task. dev-work carries its own adapted copies of those skills and prompts, so Superpowers doesn't need to be installed, and it makes the decisions that Superpowers normally asks a person to make.
 - [ai-workspace](https://github.com/sebmartin/ai-workspace-plugin) organizes long-running work into threads. A thread is a folder of markdown files for one topic: notes from past sessions, decisions, todos and other documents. Threads live in a directory called the workspace. In dev-work, each piece of work starts as a todo in a thread, and its design is saved in the same thread.
 
 ## How it works
@@ -15,21 +15,22 @@ There are two commands.
 sequenceDiagram
     actor You
     participant T as Thread
-    participant S as Session
+    participant D as Design
+    participant O as Orchestrator
     participant W as Workflow agents
     participant G as GitHub
 
-    You->>S: /dev-work:design with a todo
-    S->>T: Read notes, decisions and research
+    You->>D: /dev-work:design with a todo
+    D->>T: Read notes, decisions and research
     loop Until you say to write it up
-        S->>You: One question at a time
-        You-->>S: Answers and corrections
+        D->>You: One question at a time, then what's still open
+        You-->>D: Answers and corrections
     end
-    S->>T: Save the design, link it from the todo
+    D->>T: Save the design, link it from the todo
 
-    You->>S: /dev-work:develop with the todo
-    S->>S: New worktree, enter it
-    S->>W: Launch the execute workflow with the design
+    You->>O: /dev-work:develop with the todo
+    O->>O: New worktree, enter it
+    O->>W: Launch the execute workflow with the design
     W->>W: Write a plan from the design
     loop Each task in the plan
         W->>W: Implement, review, check
@@ -37,19 +38,19 @@ sequenceDiagram
             W->>W: Fix, then review the fix
         end
     end
-    W->>W: Review the whole branch, write the PR description
-    W-->>S: Result and PR text
-    S->>G: Push the branch, open a pull request
-    S->>T: Log the run, the PR link and what was left unfixed
+    W->>W: Review the whole branch, check what's being left out, write the PR description
+    W-->>O: Result and PR text
+    O->>G: Push the branch, open a pull request
+    O->>T: Log the run, the PR link and what was left unfixed
     You->>G: Review and merge
 ```
 
-`/dev-work:design <todo>` is the part you do with Claude. It runs Superpowers' brainstorming skill on the todo. Claude asks you questions until nothing is open, and writes the design (what to build and why, the decisions made, and the acceptance criteria) only when you say to. A separate agent then checks that the design is complete enough to plan from. The design is saved in the thread, in a folder for this piece of work, `artifacts/dev-work/<date>-<todo>/`, linked from the todo. Nothing is written to the code repository.
+`/dev-work:design <todo>` is the part you do with Claude, adapted from Superpowers' brainstorming. Claude asks you questions one at a time and ends each round with what's still open. It writes the design (what to build and why, the decisions made, and the acceptance criteria) only when you say to. A separate agent then checks that the design is complete enough to plan from. The design is saved in the thread, in a folder for this piece of work, `artifacts/dev-work/<date>-<todo>/`, linked from the todo. Nothing is written to the code repository.
 
-`/dev-work:develop <todo>` does the rest and asks you nothing after setup:
+`/dev-work:develop <todo>` does the rest and asks you nothing after setup. The Claude session you run it in becomes the orchestrator: it does the parts that touch you, the thread and GitHub, and a workflow of separate agents does the building.
 
-1. It creates a git worktree on a new branch, under the repository's `.claude/worktrees/`, and moves the session into it.
-2. It launches a dynamic workflow called `execute` with the design's text. The workflow plans the design with Superpowers' writing-plans skill, then builds it the way Superpowers' subagent-driven-development skill describes: for each task, one agent implements it, another reviews it, and a third checks anything the reviewer couldn't verify, with up to five rounds of fixes. Questions that Superpowers would normally leave to a person are decided by a separate agent, and each decision is recorded with its reason. After the last task, the whole branch is reviewed once more. Then a separate agent checks everything that was set aside along the way (findings deferred as minor, filed as out of scope, or parked) and works out what would actually go wrong if the branch shipped without it. Anything that causes real harm is fixed before the pull request, or, if fixing it needs a design decision, the run stops and asks you. Only then does an agent write the pull request description.
+1. It creates a git worktree on a new branch, under the repository's `.claude/worktrees/`, and moves the orchestrator into it.
+2. It launches a dynamic workflow called `execute` with the design's text. The workflow plans the design, then builds it the way Superpowers' subagent-driven-development skill describes: for each task, one agent implements it, another reviews it, and a third checks anything the reviewer couldn't verify, with up to five rounds of fixes. Questions that Superpowers would normally leave to a person are decided by a separate agent, and each decision is recorded with its reason. After the last task, the whole branch is reviewed once more. Then a separate agent checks everything that was set aside along the way (findings deferred as minor, filed as out of scope, or parked) and works out what would actually go wrong if the branch shipped without it. Anything that causes real harm is fixed before the pull request, or, if fixing it needs a design decision, the run stops and asks you. Only then does an agent write the pull request description.
 3. It reads the commit messages and the description for anything private, pushes the branch and opens the pull request.
 4. It records the run, the pull request link and what it found but didn't fix in a `log.md` next to the design, and removes the worktree. The branch stays, so you can check it out to try the change; a review round recreates the worktree.
 
@@ -64,7 +65,6 @@ Threads can hold private notes, so the agents that write code are not given them
 ## Requirements
 
 - Claude Code, with dynamic workflows enabled.
-- The Superpowers plugin, version 7 or later.
 - The ai-workspace plugin.
 - The GitHub CLI (`gh`), signed in.
 
@@ -103,9 +103,10 @@ If the repository has no pull request template, develop uses its own, `templates
 ## Files
 
 ```
-skills/design/SKILL.md     /dev-work:design
-skills/develop/SKILL.md    /dev-work:develop
-agents/worker.md           the agent type used for planning, implementing and reviewing
-workflows/execute.js       the execute workflow, with the agents' prompts
-templates/pr-template.md   the default pull request description
+skills/design/SKILL.md                  /dev-work:design
+skills/design/builder-check-prompt.md   the prompt for the agent that checks a design is complete
+skills/develop/SKILL.md                 /dev-work:develop
+agents/worker.md                        the agent type used for planning, implementing and reviewing
+workflows/execute.js                    the execute workflow, with the agents' prompts
+templates/pr-template.md                the default pull request description
 ```

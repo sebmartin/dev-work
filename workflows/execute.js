@@ -21,7 +21,8 @@ export const meta = {
 //
 // The implementer, task reviewer, re-reviewer and branch reviewer prompts are adapted from Superpowers
 // 7.0.1 (subagent-driven-development's implementer, task-reviewer and re-review templates, and
-// requesting-code-review's code-reviewer template): same process and wording, with text in and out
+// requesting-code-review's code-reviewer template), and the planner's from writing-plans (7.0.2): same
+// process and wording, with text in and out
 // instead of brief, report and diff files. Following later Superpowers changes is a deliberate step.
 const A = args
 const ag = (prompt, opts = {}) => agent(prompt, { agentType: 'dev-work:worker', ...opts })
@@ -310,10 +311,13 @@ ${rulings.join('\n') || '(none)'}
 
 ${question}
 
-Write every decision as "Ruling: <what you decided> — <why> — <what it costs if wrong>". Decide; nobody will answer questions. Set stop only for an irreversible or destructive operation, a security-sensitive action, or a plan so broken that every path forward is a guess, and say why in stop_reason.`,
+Write every decision as "Ruling: <what you decided>; why: <why>; cost if wrong: <what it costs if wrong>". Decide; nobody will answer questions. Set stop only for an irreversible or destructive operation, a security-sensitive action, or a plan so broken that every path forward is a guess, and say why in stop_reason.`,
   { label, phase, schema, model: 'opus', effort: 'high' })
 
-const stop = (reason, at) => result('stopped', { at, reason })
+// A stop says what kind it is, so the session doesn't have to guess from the text: 'design' needs a
+// decision about the design from the user, 'ruler' is the ruler stopping on a risk or a broken plan,
+// 'blocked' is an implementer that couldn't finish.
+const stop = (reason, at, kind = 'ruler') => result('stopped', { at, reason, kind })
 
 // Fix rounds on a set of findings: a fresh implementer per round (rounds 1-3 on the given model, 4-5 one
 // tier up), each followed by a scoped re-review. Returns the findings still open and the new head.
@@ -335,7 +339,7 @@ const fixLoop = async ({ open, head, model, label, phase, fixPrompt, task, idPre
     open = open.filter(f => !addressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
     onRound(round, before - (open.length - rr.new_findings.filter(f => f.severity !== 'Minor').length), open.length, fixBase, head)
     // A fix agent that couldn't proceed ends the loop; the breaker rules on what's left.
-    if (fix.status === 'BLOCKED' || fix.status === 'NEEDS_CONTEXT') { reports.push(`The fix agent reported ${fix.status}: ${fix.summary}`); break }
+    if (fix.status === 'BLOCKED' || fix.status === 'NEEDS_CONTEXT') { open = open.map(f => ({ ...f, text: `${f.text} (the fix agent reported ${fix.status}: ${fix.summary})` })); break }
   }
   return { open, head }
 }
@@ -355,9 +359,9 @@ ${fmt(open)}`,
 // ---------- The deferral check ----------
 // Everything headed for "not fixed" gets an independent look before anything is published: the reviewer
 // that labelled a finding and the session that wants to finish both have a stake in deferring it.
-const DEFERRAL = obj({ items: arr(obj({ id: str, consequence: str, verdict: { type: 'string', enum: ['resolve', 'defer'] }, needs_design_change: bool, reason: str })) })
+const DEFERRAL = obj({ items: arr(obj({ id: str, consequence: str, verdict: { type: 'string', enum: ['resolve', 'defer', 'fixed'] }, needs_design_change: bool, reason: str })) })
 const deferralCheck = async (head, phaseName) => {
-  const items = [...deferred.map(x => `deferred: ${x}`), ...parked.map(x => `parked: ${x}`)].map((text, i) => ({ id: `D-${i + 1}`, text }))
+  const items = [...deferred.map(x => ({ from: 'deferred', text: x })), ...parked.map(x => ({ from: 'parked', text: x }))].map((x, i) => ({ id: `D-${i + 1}`, ...x }))
   if (!items.length) return { head }
   const c = await ag(`Findings from this run are about to be left out of the pull request: deferred as minor, filed as out of scope, or parked. Each was set aside by whoever found it, and nobody has checked that call. Check it.
 
@@ -367,15 +371,16 @@ ${A.design}
 
 ## The Findings
 
-${items.map(i => `- ${i.id}: ${i.text}`).join('\n')}
+${items.map(i => `- ${i.id} (${i.from}): ${i.text}`).join('\n')}
 
 For each finding, read the code it points at and work out what actually goes wrong, and for whom, if this branch ships as it is: a person or an agent using the software, not the code's tidiness. Write that in consequence, concretely, or "nothing goes wrong" with why. Then:
 - verdict resolve when something real goes wrong: content lost or silently overwritten, the software not doing what the design says, or an agent steered into doing the wrong thing. Set needs_design_change when fixing it would contradict or go beyond the design.
 - verdict defer when nothing concrete goes wrong, and say why in reason.
+- verdict fixed when the branch has already fixed it (a later fix may have), with the evidence in reason.
 Read only.`,
     { label: `deferral-check`, phase: phaseName, model: 'opus', effort: 'high', schema: DEFERRAL })
   if (!c) return { head, failed: 'deferral check' }
-  const byId = Object.fromEntries(items.map(i => [i.id, i.text]))
+  const byId = Object.fromEntries(items.map(i => [i.id, i.text])), fromId = Object.fromEntries(items.map(i => [i.id, i.from]))
   const decided = new Set(c.items.map(x => x.id))
   // A finding the check skipped is treated as needing resolution: it fails closed.
   items.filter(i => !decided.has(i.id)).forEach(i => c.items.push({ id: i.id, consequence: 'not assessed', verdict: 'resolve', needs_design_change: false, reason: 'the check returned no verdict' }))
@@ -383,7 +388,7 @@ Read only.`,
   if (design.length) return { head, stop: `These findings would cause real harm if shipped, and fixing them needs a design decision:\n${design.map(x => `- ${byId[x.id]}\n  What goes wrong: ${x.consequence}`).join('\n')}` }
   const fixList = c.items.filter(x => x.verdict === 'resolve').map(x => ({ id: x.id, severity: 'Important', text: `${byId[x.id]} What goes wrong if shipped: ${x.consequence}` }))
   deferred.length = 0; parked.length = 0
-  c.items.filter(x => x.verdict === 'defer').forEach(x => deferred.push(`${byId[x.id]} (left out because: ${x.reason})`))
+  c.items.filter(x => x.verdict === 'defer').forEach(x => (fromId[x.id] === 'parked' ? parked : deferred).push(`${byId[x.id]} (left out because: ${x.reason})`))
   if (!fixList.length) return { head }
   const fix = await ag(`Fix these findings before this branch is published. Each was going to be left out; a check found it causes real harm. Re-run the tests that cover what you change, and commit. ${LOCAL} ${NO_SUB}
 
@@ -453,14 +458,14 @@ Return in report, per item: what changed, or why nothing should change, with evi
     for (const d of r.decisions) {
       const f = loop.open.find(x => x.id === d.id) || { id: d.id, text: '' }
       outcome[d.id] = `${d.decision}: ${d.ruling}`
-      if (d.decision === 'park') { rule(`Round ${R}: parked — ${f.id} ${f.text} — ${d.ruling}`); parked.push(`round ${R} ${f.id}: ${f.text} — ${d.ruling}`) }
-      else { rule(`Round ${R}: ${d.ruling}`); surfaced.push(`${f.id}: ${f.text} — ${d.ruling}`) }
+      if (d.decision === 'park') { rule(`Round ${R}: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`round ${R} ${f.id}: ${f.text}; ruling: ${d.ruling}`) }
+      else { rule(`Round ${R}: ${d.ruling}`); surfaced.push(`${f.id}: ${f.text}; ruling: ${d.ruling}`) }
     }
     rule(...r.rulings.map(x => `Round ${R}: ${x}`))
   }
   const dc = await deferralCheck(loop.head, 'Review feedback')
   if (dc.failed) return result('failed', { stage: dc.failed })
-  if (dc.stop) return stop(dc.stop, `round ${R} deferral check`)
+  if (dc.stop) return stop(dc.stop, `round ${R} deferral check`, 'design')
   loop.head = dc.head
   phase('Write-up')
   const w = await ag(`Write the replies to a review of a pull request, for a reader who knows only the pull request. Read what the round changed with \`git log\` and \`git diff\` on this branch as needed; change nothing.
@@ -485,11 +490,66 @@ For each item, write a short reply saying what was done, or why it wasn't, stand
 
 // ---------- Plan ----------
 phase('Plan')
-const plan = await ag(`Use the superpowers:writing-plans skill to write the implementation plan for the design below. Read the code as you need to, and run the repository's existing commands, but don't write or run new code.
+const plan = await ag(`Write the implementation plan for the design below, for an engineer who has not seen this codebase or this design. Assume they write idiomatic code in the project's language once they know the exact interface and the exact test, and that they will make a reasonable choice wherever the plan leaves one open. What they cannot know is what you decided: which files, which names and signatures, which values from the design, which tests prove each task. Document those. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+
+Read the code as you need to, and run the repository's existing commands, but don't write or run new code.
 
 - The design is decided: plan it, don't redesign it. Plan only what it asks; anything else goes under Follow-ups.
 - Nobody will answer questions. Make the call and record it under Assumptions.
-- Don't save the plan to a file and don't ask how to execute it: return it, as below. Where the skill's header asks for the spec's path, write "the design".
+- If the design covers several independent subsystems, plan them in order anyway, each producing working, testable software, and say so under Assumptions.
+
+## File Structure
+
+Before defining tasks, map out which files will be created or modified and what each one is responsible for. This is where decomposition decisions get locked in.
+
+- Design units with clear boundaries and well-defined interfaces. Each file should have one clear responsibility.
+- Prefer smaller, focused files over large ones that do too much.
+- Files that change together should live together. Split by responsibility, not by technical layer.
+- In existing codebases, follow established patterns. If the codebase uses large files, don't unilaterally restructure, but if a file you're modifying has grown unwieldy, including a split in the plan is reasonable.
+
+## Task Right-Sizing
+
+A task is the smallest unit that carries its own test cycle and is worth a fresh reviewer's gate. Fold setup, configuration, scaffolding and documentation steps into the task whose deliverable needs them; split only where a reviewer could meaningfully reject one task while approving its neighbor. Each task ends with an independently testable deliverable.
+
+## Step Granularity
+
+Each step is one action with a checkable result: write the failing test; run it to make sure it fails; implement the minimal code to make the test pass; run the tests and make sure they pass; commit.
+
+## The Overview
+
+Everything before the first task:
+- a title, then **Goal** (one sentence), **Architecture** (2-3 sentences about the approach) and **Tech Stack**;
+- **Global Constraints:** the design's project-wide requirements (version floors, dependency limits, naming and copy rules, platform requirements), one line each, with exact values copied verbatim from the design. Every task's requirements implicitly include this section.
+- **Review Focus:** the five input classes or failure modes the design implies but no task's tests exercise that are most likely to bite a person using this software, one line each, naming the input or condition and the behavior a reasonable person would expect, most likely first. The design says what the software must do, not everything it will meet, and its silence on an input is not permission for that input to break the program. For each line, add the test that pins it to the task that owns the code.
+- the file structure.
+
+## Each Task
+
+Its title, then:
+- **Files:** each file to create, modify (with line ranges) or test, by exact path.
+- **Interfaces:** what this task consumes from earlier tasks (exact signatures) and what it produces that later tasks rely on (exact names, parameter and return types). A task's implementer sees only their own task; this block is how they learn the names and types neighboring tasks use.
+- Numbered checkbox steps, in this shape: write the failing test (its name and assertions, as code); run it to verify it fails (the command, and the failure expected); implement (the exact signature and file, with one line on the approach when the signature and the test leave a choice); run it to verify it passes (the command, and PASS); commit (the files and a message that says what changed and why, for a stranger).
+
+## What a Step Contains
+
+A step is done when the implementer can write exactly one reasonable thing from it. That is the whole requirement: unambiguous, not complete.
+- A test step: the test's name and its assertions, as code, with the design's exact values in them.
+- A code step: the exact signature (name, parameters, return type), the file it lives in, and the specific values the design pins. The implementer writes the body. A body appears only for an algorithm the signature and tests do not determine, or for exact copy the design fixes.
+- A verification step: the command to run and the output that means it passed.
+- A reference to another task: that task's Interfaces block says what to use; the plan does not repeat that task's code.
+
+A plan is the set of decisions the implementer cannot make alone. A plan longer than the code it describes has written the code instead. Lines that decide nothing ("TBD", "handle edge cases", "add appropriate validation", "write tests for the above", a type or function no task defines) are the opposite failure.
+
+## Self-Review
+
+After writing the complete plan, look at the design with fresh eyes and check the plan against it yourself:
+1. Design coverage: can you point to a task that implements each requirement? Add a task for any that has none.
+2. Step scan: every step lets the implementer write exactly one reasonable thing, and no step carries more than that. Fix lines that decide nothing, and bodies the signature and tests already determine.
+3. Type consistency: do the types, signatures and names in later tasks match what earlier tasks defined?
+4. Review Focus: for each input class or failure mode the design implies, is there a task whose tests exercise it? An empty section means you checked and found none.
+5. Proportion: a plan several times longer than the design it implements is a transcript of the program. If code blocks are most of it, replace bodies with signatures, test names and assertions.
+
+Fix what you find inline.
 ${INPUTS}
 
 ## The Design
@@ -497,6 +557,8 @@ ${INPUTS}
 ${A.design}
 
 ## Return
+
+Don't save the plan to a file: return it, as below.
 
 - overview: everything in the plan before the first task (title, Goal, Architecture, Tech Stack, Global Constraints, Review Focus, file structure).
 - global_constraints and review_focus: those two sections' text.
@@ -538,7 +600,7 @@ for (const t of plan.tasks) {
       { label: `implement-${n}${attempt > 1 ? `-a${attempt}` : ''}`, phase: 'Tasks', schema: IMPL, model, effort: effort(model) })
     if (!impl) return result('failed', { stage: `implement ${n}` })
     if (impl.status === 'DONE' || impl.status === 'DONE_WITH_CONCERNS') break
-    if (attempt === 3) return stop(`task ${n}'s implementer still ${impl.status} after 3 dispatches: ${impl.summary}`, `task ${n}`)
+    if (attempt === 3) return stop(`task ${n}'s implementer still ${impl.status} after 3 dispatches: ${impl.summary}`, `task ${n}`, 'blocked')
     const r = await ruler(`Task ${n}'s implementer (${model}) reported ${impl.status}.\nIts summary: ${impl.summary}\nIts report:\n${impl.report}\nGive the missing context or your correction of the plan as answer, and set escalate if the task needs more reasoning than ${model} has.`,
       obj({ answer: str, escalate: bool, ...RULINGS }, ['answer', 'escalate', 'rulings', 'stop']), `rule-${n}-a${attempt}`, 'Tasks')
     if (!r) return result('failed', { stage: `ruling on task ${n}` })
@@ -604,7 +666,7 @@ ${fmt(items)}`,
     if (r.stop) return stop(r.stop_reason, `task ${n}`)
     for (const d of r.decisions) {
       const f = open.find(x => x.id === d.id) || { id: d.id, text: '' }
-      if (d.decision === 'park') { rule(`Task ${n}: parked — ${f.id} ${f.text} — ${d.ruling}`); parked.push(`T${n} ${f.id}: ${f.text} — ${d.ruling}`) }
+      if (d.decision === 'park') { rule(`Task ${n}: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`T${n} ${f.id}: ${f.text}; ruling: ${d.ruling}`) }
       else { rule(`Task ${n}: ${d.ruling}`); carry.push(`Task ${n}: ${d.ruling}`) }
     }
     rule(...r.rulings.map(x => `Task ${n}: ${x}`))
@@ -659,8 +721,8 @@ Return in report what changed per finding, the covering tests, the command and t
     if (r.stop) return stop(r.stop_reason, 'final')
     for (const d of r.decisions) {
       const f = finalOpen.find(x => x.id === d.id) || { id: d.id, text: '' }
-      if (d.decision === 'park') { rule(`Final: parked — ${f.id} ${f.text} — ${d.ruling}`); parked.push(`final ${f.id}: ${f.text} — ${d.ruling}`) }
-      else { rule(`Final: ${d.ruling}`); surfaced.push(`${f.id}: ${f.text} — ${d.ruling}`) }
+      if (d.decision === 'park') { rule(`Final: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`final ${f.id}: ${f.text}; ruling: ${d.ruling}`) }
+      else { rule(`Final: ${d.ruling}`); surfaced.push(`${f.id}: ${f.text}; ruling: ${d.ruling}`) }
     }
     rule(...r.rulings.map(x => `Final: ${x}`))
   }
@@ -668,7 +730,7 @@ Return in report what changed per finding, the covering tests, the command and t
 
 const dc = await deferralCheck(lastHead, 'Final review')
 if (dc.failed) return result('failed', { stage: dc.failed })
-if (dc.stop) return stop(dc.stop, 'deferral check')
+if (dc.stop) return stop(dc.stop, 'deferral check', 'design')
 lastHead = dc.head
 if (dc.fixed) finalFix = `${finalFix}\n\nFixed after the deferral check:\n${dc.fixed}`
 
