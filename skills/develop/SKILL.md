@@ -29,11 +29,9 @@ Each todo developed with dev-work has a folder in its thread, `artifacts/dev-wor
 Status: <one line: Running, PR open, Stopped: <reason and what would fix it>, Failed at <stage>: <reason>, Merged, Closed>
 PR: <link, or none yet>
 
-## Runs
-- <date>: <what happened>
-
-## Review rounds
-- Round <n> (<date>): <link to the review on GitHub>. <what changed, one line>; pushed or not pushed
+## History
+One line per invocation, oldest first. The kind is one of start, resume, restart, review round <n>, stopped, failed, close.
+- <date>, <kind>: <what happened, one line>. A review round also gives the link to the review on GitHub and whether it was pushed.
 
 ## Not fixed in this PR
 Found during the work and deliberately left out of the PR. At close, the user picks which become todos.
@@ -96,14 +94,14 @@ The user has reviewed the PR and asked for changes, as review comments on the PR
 2. If an item changes what the design says, record it in `design.md`'s decision log first.
 3. Launch `dev-work:execute` with `{ design, inputs, pr_template, base, feedback: [{ id, text }], round: <n>, pr: <the PR's current description>, head: <the branch's current commit id> }`. It fixes, reviews the fixes, and returns `replies` (one per item) and `pr_body` (empty unless the description should change).
 4. Show the user what changed, item by item, and ask whether to push. This is the one question a round asks, because pushing and replying publish on the user's behalf. If they say yes: read the replies for anything private, push, update the PR description if `pr_body` isn't empty, and post each reply on its comment.
-5. Add the round to `log.md`'s Review rounds: its number, the date, a link to the review on GitHub, one line on what changed, and whether it was pushed. Design-changing rulings go in `design.md`'s decision log.
+5. Add the round to `log.md`'s History as `<date>, review round <n>: <link to the review on GitHub>. <what changed>; pushed` (or `not pushed`). Design-changing rulings go in `design.md`'s decision log.
 
 ## 6. At the end of every invocation
 
 **Close**, when the PR is merged: list what's under Not fixed in this PR in `log.md` and ask which to track as todos (nothing is filed automatically), tick the ones filed, set the log's Status to `Merged`, and retire the todo. When it was closed without merging: ask once whether to retire the todo or park it, do that, and set Status to `Closed`. Either way, remove any worktree still left for the todo (below). Keep the branch.
 
 Every other invocation:
-1. **Update `log.md`:** its Status line, and a line under Runs for this invocation.
+1. **Update `log.md`:** its Status line, and a History line for this invocation.
 2. **Leave the worktree** with `ExitWorktree` and `keep`, so the session returns to where it started.
 3. **Remove the worktree** once a PR is open (after publishing or a review round), as in section 2: nothing uncommitted, then `git worktree remove --force <path>` from where the session started, which also removes the run's ignored files in `.dev-work/`. Keep the branch. The worktree exists only while develop is working; left in place, it would stop the user checking the branch out anywhere else. After a stop or a failure, keep it for the resume or restart.
 4. **Report** to the user: what happened, the PR link, and anything that needs them.
