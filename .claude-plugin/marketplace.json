@@ -7,7 +7,7 @@
     {
       "name": "dev-work",
       "source": "./",
-      "description": "Takes a thread todo with a linked design through Superpowers to a PR ready for human review, with an agent orchestrator in the human's place and a dynamic workflow as the subagent-driven-development controller."
+      "description": "Takes a thread todo with a linked design to a PR ready for human review: a session sets up and publishes, and a dynamic workflow plans, builds and reviews the change the way Superpowers' subagent-driven-development does."
     }
   ]
 }
