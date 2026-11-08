@@ -11,6 +11,9 @@ You do the parts that touch the user, the thread and GitHub: set up, launch the 
 
 ## Rules
 
+- **Done means correct.** Minor issues that affect no one can wait.
+- **Use `gh` as it is.** Never use another account's token, even to read. If `gh` can't do something, stop and say which account is active.
+- **Report plainly.** Name things by what they are, not by section numbers or internal terms, and lead with what you need from the user.
 - **Autonomous once started.** Ask nothing after setup, except where a section below says to. If something needs the user, stop and report what happened, what was tried and what would fix it.
 - **The design is the handoff.** The workflow gets the design and nothing else from the thread. If the run would need the thread to decide something, the design is missing it: say so in your report.
 - **Pass the design verbatim.** `args` has only the fields in section 3, and `design` is the design artifact's text exactly as saved. Never add notes, context or anything else from the thread.
@@ -78,13 +81,13 @@ In the same turn as setup, run the `dev-work:execute` workflow with exactly thes
 
 It returns:
 - `done`, with `pr_title`, `pr_body`, `follow_ups`, `rulings`, `parked`, `deferred` and `surfaced`;
-- `stopped`, with the reason. If the design is missing something, say so: the user fixes it with `/dev-work:design`, and the next develop restarts;
+- `stopped`, with the reason. If the design is missing something, say so: the user fixes it with `/dev-work:design`, and the next develop restarts. A stop at the deferral check lists findings that would cause real harm and need a design decision: put each to the user plainly, what goes wrong and for whom, and let them decide;
 - `failed`, with the stage. Relaunch it in this session to resume.
 
 ## 4. Publish
 
 1. Read every commit message (`git log <base>..HEAD`) and the returned PR title and body for anything private: names of threads, notes or people, or anything that leans on the thread to make sense. Fix the PR text yourself if needed. If a commit message carries something private, stop and report it; don't rewrite history.
-2. Push the branch and open the PR into the target branch with `gh`, using the title and body. If pushing or opening the PR is refused, stop and report which account `gh` used. Don't switch accounts or reach for other credentials.
+2. Push the branch and open the PR into the target branch with `gh`, using the title and body.
 3. **Back to the thread:** in `log.md`, the PR link, the run, and under Not fixed in this PR the workflow's `follow_ups` plus anything parked or deferred worth tracking. Rulings that change the design go in `design.md`'s decision log, with why.
 
 ## 5. Iterate on review feedback

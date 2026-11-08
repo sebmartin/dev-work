@@ -352,6 +352,66 @@ ${fmt(open)}`,
   return r
 }
 
+// ---------- The deferral check ----------
+// Everything headed for "not fixed" gets an independent look before anything is published: the reviewer
+// that labelled a finding and the session that wants to finish both have a stake in deferring it.
+const DEFERRAL = obj({ items: arr(obj({ id: str, consequence: str, verdict: { type: 'string', enum: ['resolve', 'defer'] }, needs_design_change: bool, reason: str })) })
+const deferralCheck = async (head, phaseName) => {
+  const items = [...deferred.map(x => `deferred: ${x}`), ...parked.map(x => `parked: ${x}`)].map((text, i) => ({ id: `D-${i + 1}`, text }))
+  if (!items.length) return { head }
+  const c = await ag(`Findings from this run are about to be left out of the pull request: deferred as minor, filed as out of scope, or parked. Each was set aside by whoever found it, and nobody has checked that call. Check it.
+
+## The Design
+
+${A.design}
+
+## The Findings
+
+${items.map(i => `- ${i.id}: ${i.text}`).join('\n')}
+
+For each finding, read the code it points at and work out what actually goes wrong, and for whom, if this branch ships as it is: a person or an agent using the software, not the code's tidiness. Write that in consequence, concretely, or "nothing goes wrong" with why. Then:
+- verdict resolve when something real goes wrong: content lost or silently overwritten, the software not doing what the design says, or an agent steered into doing the wrong thing. Set needs_design_change when fixing it would contradict or go beyond the design.
+- verdict defer when nothing concrete goes wrong, and say why in reason.
+Read only.`,
+    { label: `deferral-check`, phase: phaseName, model: 'opus', effort: 'high', schema: DEFERRAL })
+  if (!c) return { head, failed: 'deferral check' }
+  const byId = Object.fromEntries(items.map(i => [i.id, i.text]))
+  const decided = new Set(c.items.map(x => x.id))
+  // A finding the check skipped is treated as needing resolution: it fails closed.
+  items.filter(i => !decided.has(i.id)).forEach(i => c.items.push({ id: i.id, consequence: 'not assessed', verdict: 'resolve', needs_design_change: false, reason: 'the check returned no verdict' }))
+  const design = c.items.filter(x => x.verdict === 'resolve' && x.needs_design_change)
+  if (design.length) return { head, stop: `These findings would cause real harm if shipped, and fixing them needs a design decision:\n${design.map(x => `- ${byId[x.id]}\n  What goes wrong: ${x.consequence}`).join('\n')}` }
+  const fixList = c.items.filter(x => x.verdict === 'resolve').map(x => ({ id: x.id, severity: 'Important', text: `${byId[x.id]} What goes wrong if shipped: ${x.consequence}` }))
+  deferred.length = 0; parked.length = 0
+  c.items.filter(x => x.verdict === 'defer').forEach(x => deferred.push(`${byId[x.id]} (left out because: ${x.reason})`))
+  if (!fixList.length) return { head }
+  const fix = await ag(`Fix these findings before this branch is published. Each was going to be left out; a check found it causes real harm. Re-run the tests that cover what you change, and commit. ${LOCAL} ${NO_SUB}
+
+## The Design
+
+${A.design}
+
+## Rulings Made in This Run
+
+${rulings.join('\n') || '(none)'}
+
+## The Findings
+
+${fmt(fixList)}
+
+Return in report what changed per finding, the covering tests, the command and the output. head_sha is the full commit id from \`git rev-parse HEAD\` when you finish.`,
+    { label: 'deferral-fix', phase: phaseName, schema: IMPL, model: 'sonnet', effort: 'medium' })
+  if (!fix) return { head, failed: 'deferral fix' }
+  const rr = await ag(reReviewPrompt({ task: 'Findings that were going to be left out of the pull request, fixed because they cause real harm.', findings: fmt(fixList), reports: fix.report, fixBase: head, head: fix.head_sha, idPrefix: 'D-R-' }),
+    { label: 'deferral-re-review', phase: phaseName, schema: REREVIEW, model: 'sonnet', effort: 'medium' })
+  if (!rr) return { head: fix.head_sha, failed: 'deferral re-review' }
+  const addressed = new Set(rr.results.filter(r => r.addressed).map(r => r.id))
+  const left = fixList.filter(f => !addressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
+  if (left.length) return { head: fix.head_sha, stop: `These findings cause real harm and are still open after a fix:\n${fmt(left)}` }
+  rr.new_findings.filter(f => f.severity === 'Minor').map(f => `${f.id} ${f.text}`).concat(rr.out_of_scope).forEach(x => deferred.push(`${x} (found after the deferral check, not assessed)`))
+  return { head: fix.head_sha, fixed: fix.report }
+}
+
 // ---------- Review feedback: fix rounds on a review of the PR, then the replies ----------
 if (A.feedback) {
   phase('Review feedback')
@@ -398,6 +458,10 @@ Return in report, per item: what changed, or why nothing should change, with evi
     }
     rule(...r.rulings.map(x => `Round ${R}: ${x}`))
   }
+  const dc = await deferralCheck(loop.head, 'Review feedback')
+  if (dc.failed) return result('failed', { stage: dc.failed })
+  if (dc.stop) return stop(dc.stop, `round ${R} deferral check`)
+  loop.head = dc.head
   phase('Write-up')
   const w = await ag(`Write the replies to a review of a pull request, for a reader who knows only the pull request. Read what the round changed with \`git log\` and \`git diff\` on this branch as needed; change nothing.
 
@@ -601,6 +665,12 @@ Return in report what changed per finding, the covering tests, the command and t
     rule(...r.rulings.map(x => `Final: ${x}`))
   }
 }
+
+const dc = await deferralCheck(lastHead, 'Final review')
+if (dc.failed) return result('failed', { stage: dc.failed })
+if (dc.stop) return stop(dc.stop, 'deferral check')
+lastHead = dc.head
+if (dc.fixed) finalFix = `${finalFix}\n\nFixed after the deferral check:\n${dc.fixed}`
 
 // ---------- Write-up: the PR description, from the design and the run's results only ----------
 phase('Write-up')
