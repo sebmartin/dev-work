@@ -1,98 +1,117 @@
 ---
 name: develop
-description: Takes a thread todo with a linked design through Superpowers to a pull request ready for human review, with you standing where Superpowers expects a human, then handles the user's review rounds and closes the work after merge. Use when the user types /dev-work:develop or asks to develop a todo with dev-work, including when they've reviewed or merged its PR.
+description: Takes a thread todo with a linked design to a pull request ready for human review, by launching dev-work's execute workflow, then handles the user's review rounds and closes the work after merge. Use when the user types /dev-work:develop or asks to develop a todo with dev-work, including when they've reviewed or merged its PR.
 ---
 
 # dev-work: develop
 
-Superpowers is the process. You stand where it expects a human: you start each step, answer for the user, and write the outcome back to the thread. You don't write code, read diffs or review.
+You are the orchestrator. You do the parts that touch the user, the thread and GitHub: set up, launch the `execute` workflow, publish what it returns, and write back. The workflow does everything else: it plans the design, builds it task by task with reviews, reviews the whole branch, and writes the PR description. You don't write code, read diffs or review.
 
-`/dev-work:develop <todo>` is the only command after design. Each time it runs, work out where the todo stands from git and GitHub (section 1) and do that part. Every invocation ends the same way (section 8).
+`/dev-work:develop <todo>` is the only command after design. Each time it runs, work out where the todo stands (section 1) and do that part. Every invocation ends the same way (section 6).
 
 ## Rules
 
+- **Use `gh` as it is.** Never use another account's token, even to read. If `gh` can't do something, stop and say which account is active.
+- **Report plainly.** Name things by what they are, not by section numbers or internal terms, and lead with what you need from the user.
 - **Autonomous once started.** Ask nothing after setup, except where a section below says to. If something needs the user, stop and report what happened, what was tried and what would fix it.
-- **The design is the handoff.** Work from it, not from the rest of the thread. If you'd need the thread to decide something, the design is missing it: say so in your report.
-- **Workers get only what you give them.** Every agent you start (the planner, and every agent in `execute`) sees only the worktree, the staged copies in `.dev-work/` and its prompt. Never give one a path into the workspace or a thread, and never tell one about threads.
-- **A develop run writes only inside its worktree,** apart from the commits, the branch and the PR. Only you write to the thread, as the last step of an invocation.
-- **Nothing private leaves the machine.** Commits, PR text and PR replies stand alone for a stranger: no names of threads, designs, plans or the people in them, and nothing from their notes. Read every commit message, the PR text and every reply before it goes out.
+- **The design is the handoff.** The workflow gets the design and nothing else from the thread. If the run would need the thread to decide something, the design is missing it: say so in your report.
+- **Pass the design verbatim.** `args` has only the fields in section 3, and `design` is the design artifact's text exactly as saved. Never add notes, context or anything else from the thread.
+- **Workers get only what the workflow gives them.** Never give an agent a path into the workspace or a thread, and never tell one about threads.
+- **Nothing private leaves the machine.** The workflow writes the commit messages, the PR description and replies from the design and the run's results. Read them before they go out; they must stand alone for a stranger.
+
+## The loop folder
+
+Each todo developed with dev-work has a folder in its thread, `artifacts/dev-work/<YYYYMMDD>-<todo slug>/`, made by `/dev-work:design` and linked from the todo:
+- `design.md`: the design, ending with its `## Decision log`. Only changes to the design itself go in the log.
+- `log.md`: what develop did, which you keep. Make it on the first run:
+
+```
+# Log
+
+Todo: <the todo's file name, e.g. 20261103-some-todo.md>
+Status: <one line: Running, PR open, Stopped (<kind>): <reason and what would fix it>, Failed at <stage>: <reason>, Merged, Closed>
+PR: <link, or none yet>
+Branch: <the current branch>
+Base: <the target branch and its commit id>
+Run: <the workflow run's id while it hasn't finished, otherwise none>
+
+## History
+One line per invocation, oldest first. The kind is one of start, resume, restart, review round <n>, stopped, failed, close.
+- <date>, <kind>: <what happened, one line>. A review round also gives the link to the review on GitHub and whether it was pushed.
+
+## Not fixed in this PR
+Found during the work and deliberately left out of the PR. At close, the user picks which become todos.
+- [ ] <what it is and why it matters, one line>
+```
+
+The PR is the record for reviewers and for anyone reading the history later: the decisions, what was left out, every review and reply. The log is the local trail that points to it. Don't write either to the todo.
 
 ## 1. Where the todo stands
 
-First, check where the session started: if it's the ai-workspace workspace or inside it, stop before anything else, because agents started from here would be given the workspace's instructions. Tell the user to start a new session in the directory that holds their repositories and run `/dev-work:develop` there.
+Check where the session started: it must be a directory that contains the repository (the folder holding the user's repositories, or the repository itself), because the session has to enter a worktree of that repository. If it isn't, stop: tell the user to start a session there, resume the thread, and run `/dev-work:develop <todo>`.
 
-Then read the todo and its design. The todo's branch is `dev-work/<todo slug>`, or `dev-work/<todo slug>-<n>` after a restart; the highest `<n>` is the current one. Its worktree is `<repository>/.worktrees/` plus the branch name with `/` replaced by `-`.
+Read the todo, its loop folder's `design.md` and `log.md` (if there is one) from the thread, resumed in this session; the log's Status says how the last run ended. The todo's branch is `dev-work/<todo slug>`, or `dev-work/<todo slug>-<n>` after a restart; the highest `<n>` is the current one. Its worktree is `<repository>/.claude/worktrees/` plus the branch name with `/` replaced by `-`.
 
 | What you find | What to do |
 |---|---|
-| No branch | **Start**: sections 2 to 7 |
-| Branch, no PR, and the todo's status says the last run stopped because the design was missing something, and the thread's design now differs from `.dev-work/design.md` | **Restart**: remove the old worktree (keep its branch), then **Start** on `dev-work/<todo slug>-<n+1>` |
-| Branch, no PR | **Resume**: enter the worktree; plan if `.dev-work/plan.md` is missing; run `execute` (it resumes from its ledger); then finish |
-| Open PR with review feedback since the last round | **Iterate**: section 6 |
-| Open PR, no new feedback | Report the PR's state and stop |
-| Merged PR | **Close**: section 7, merged |
-| Closed PR, not merged | **Close**: section 7, closed |
+| No branch | **Start**: sections 2 to 4 |
+| Branch, no PR, Status is `Stopped (design)`, and the thread's design differs from the worktree's `.dev-work/design.md` | **Restart**: remove the old worktree (keep its branch), then **Start** on `dev-work/<todo slug>-<n+1>` |
+| Branch, no PR, Status is `Stopped (design)`, and the design hasn't changed | Tell the user the design needs their decision first, with `/dev-work:design`, and stop |
+| Branch, no PR, Status is `Running` or `Failed`, with a Run id | **Resume**: find and enter the worktree (section 2), then relaunch the workflow with the same `args` and `resumeFromRunId` set to the Run id; completed agents return their saved results. Then section 4. If the relaunch reports nothing to resume (another session ran it), **Start over** |
+| Branch, no PR, Status is `Stopped (ruler)` or `Stopped (blocked)` | Report the stop and what would fix it, and ask whether to start over. A relaunch would replay the same stop |
+| Open PR with review feedback since the last round | **Iterate**: section 5 |
+| Open PR, no new feedback | Report the PR's state, remove any dev-work worktree left holding the branch (section 2), and stop |
+| Merged PR | **Close**: section 6, merged |
+| Closed PR, not merged | **Close**: section 6, closed |
 
-## 2. Setup (the only place to ask)
+**Start over** means: remove the old worktree (keep its branch), then **Start** on `dev-work/<todo slug>-<n+1>`.
 
-- **Task:** the todo must link to its **design**, an artifact holding the decisions, their motivation and the acceptance criteria. If there is no design, stop: the design comes first, with the user (`/dev-work:design`).
-- **Repository and target branch:** infer them from the design and the todo; default to the repository's default branch. Ask only if you can't tell. Record the base sha on the target branch.
-- **Worktree:** create it with `git worktree add` in the repository's `.worktrees/` folder, on the new branch from the target branch, never an existing checkout; hide `.worktrees/` through the repository's local exclude file (`git rev-parse --git-path info/exclude`), never `.gitignore`. Move the session into it with `EnterWorktree` (by path), then use `superpowers:using-git-worktrees`: it sees the session is already isolated and does the project setup and baseline tests. To resume or iterate, enter the existing worktree the same way.
-- **`.dev-work/`** at the root of the worktree, hidden through the same local exclude file: the staged design and inputs, the plan, evidence files tasks produce, reports and the PR text. Workers keep scratch files in `.dev-work/scratch/`.
-- **Stage the inputs:** copy the design to `.dev-work/design.md`, and each file in the todo's Inputs list to `.dev-work/` under the name the list gives (for example `.dev-work/inputs/cases.json`). If a listed file is missing, stop and say which. From here on, every agent uses only these copies.
+## 2. Setup
 
-## 3. Plan
+- **Task:** the todo must link to its loop folder, with a `design.md`. If there is none, stop: the design comes first, with the user (`/dev-work:design`).
+- **Repository and target branch:** infer them from the design and the todo; default to the repository's default branch. Ask only if you can't tell. `git fetch`, then take `origin/<target>`'s commit id as the base.
+- **Worktree:** `git worktree add <repository>/.claude/worktrees/<name> -b <branch> <base>`, then hide `.claude/worktrees/` through the repository's local exclude file (`git rev-parse --git-path info/exclude`), never `.gitignore`. Enter it with `EnterWorktree` by path. Never `cd` into it. Then set the project up as its README or AGENTS.md says (dependencies, generated files) and run its test suite once as the baseline. If the baseline fails, tell the user which tests fail and ask whether to carry on: a run on failing tests can't show whether the change broke anything. For a review round, recreate the worktree from the existing branch (`git worktree add <path> <branch>`), stage the inputs again, and enter it the same way.
+- **Where the branch is already checked out:** before creating or recreating a worktree, find any worktree holding the branch with `git worktree list --porcelain`. If it's one of dev-work's own (under the repository's `.worktrees/` or `.claude/worktrees/`, named `dev-work-…`) and `git status` in it shows nothing uncommitted, remove it with `git worktree remove --force <path>` and carry on. If it has uncommitted changes, stop and report them. If it's anywhere else, such as the user's own checkout, stop, say where, and ask them to switch that checkout away from the branch.
+- **`.dev-work/`** in the worktree, hidden through the same exclude file: copy the design there as `design.md` (only to tell later whether it changed), and each file in the todo's Inputs list into `.dev-work/inputs/` under the name the list gives. If a listed file is missing, stop and say which.
+- **PR template:** the first that exists: the repository's (`.github/pull_request_template.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `PULL_REQUEST_TEMPLATE.md` or `docs/PULL_REQUEST_TEMPLATE.md`), then the user's (`dev-work/pr-template.md` in their Claude Code configuration directory: `$CLAUDE_CONFIG_DIR`, or `~/.claude`), then this plugin's `templates/pr-template.md` (two levels up from this skill's directory).
 
-Dispatch one subagent of type `dev-work:worker` (Opus, medium effort) to use `superpowers:writing-plans` on `.dev-work/design.md`:
-- save the plan as `.dev-work/plan.md`, and don't commit it; its Spec line is `.dev-work/design.md`;
-- the design is decided: plan it, don't redesign it;
-- plan only what the design asks, and list anything else under "## Follow-ups";
-- it may read code and run the repository's existing commands, but not write or run new code;
-- nobody will answer questions: make the call and record it under "## Assumptions".
+## 3. Launch
 
-Then read the plan the way the user would: does it match the design, are its assumptions acceptable, and does it carry anything private that could reach a commit? If it misreads the design, stop. You may make small edits to the plan where it misses something the design needs; record each as a ruling, with what it costs if wrong.
+In the same turn as setup, run the `dev-work:execute` workflow with exactly these `args`:
+- `design`: the design artifact's text, verbatim.
+- `inputs`: for each staged input, `{ name, description }`, the description being the design's line about it.
+- `pr_template`: the template's text.
+- `base`: the base commit id (all 40 characters).
 
-## 4. Execute
+Right after launching, write `log.md`: Status `Running`, the Branch, the Base and the Run id the launch returned.
 
-Run the `dev-work:execute` workflow with `{ repo: <worktree>, planFile: <worktree>/.dev-work/plan.md, designFile: <worktree>/.dev-work/design.md, baseSha }`. It runs `superpowers:subagent-driven-development` with the script as the controller and a ruler agent making the controller's calls; every agent it starts is a `dev-work:worker`. When you start it, tell the user that anything they type in this session while it runs also reaches the workflow's agents and can derail it, so they should wait for your report.
-- `done`: carries rulings, parked findings, deferred findings and anything surfaced for a human.
-- `stopped`: one of SDD's stop cases, with the reason. If the reason is that the design is missing something, say so: the user fixes the design with `/dev-work:design`, and the next develop restarts.
-- `failed`: an operational failure, with the stage. Run it again; it resumes from its ledger.
+It returns:
+- `done`, with `pr_title`, `pr_body`, `follow_ups`, `rulings`, `parked`, `deferred` and `surfaced`;
+- `stopped`, with the reason and a `kind`. `design` means the design needs the user's decision: put each point to them plainly, what goes wrong and for whom, and say that they settle it with `/dev-work:design`, after which develop restarts. `ruler` and `blocked` mean the run hit a risk, a broken plan or a task it couldn't finish: report it and what would fix it;
+- `failed`, with the stage. Don't relaunch now: the next develop resumes it.
 
-## 5. Finish
+## 4. Publish
 
-Use `superpowers:finishing-a-development-branch` and choose to push and open a pull request into the target branch. Before pushing, read the commit messages.
+1. Read every commit message (`git log <base>..HEAD`) and the returned PR title and body for anything private: names of threads, notes or people, or anything that leans on the thread to make sense. Fix the PR text yourself if needed. If a commit message carries something private, stop and report it; don't rewrite history.
+2. Push the branch and open the PR into the target branch with `gh`, using the title and body.
+3. **Back to the thread:** in `log.md`, the PR link, and under Not fixed in this PR every item from the workflow's `follow_ups`, `deferred`, `parked` and `surfaced`, one plain line each, with the reason it was left out where there is one. Don't filter them.
 
-**The PR description.** Use the first template that exists: the repository's own (`.github/pull_request_template.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `PULL_REQUEST_TEMPLATE.md` or `docs/PULL_REQUEST_TEMPLATE.md`), then the user's (`dev-work/pr-template.md` in their Claude Code configuration directory: `$CLAUDE_CONFIG_DIR`, or `~/.claude`), then this plugin's `templates/pr-template.md` (two levels up from this skill's directory). Fill it in. Whatever the template, the PR must give a reviewer the run's context, so add any of these the template has no place for:
-- **Decisions and trade-offs:** every ruling from the run (what was decided, why, what it costs if wrong), the plan's assumptions, and the design decisions that shape the code, each stated in its own terms.
-- **Not done:** the design's non-goals, the plan's follow-ups, parked findings with the ruling that parked them, and deferred findings worth knowing.
-- **Testing:** the evidence: commands, results and any measurements the tasks produced.
-- **Review:** what the automated review did (fix rounds, what was parked) and anything surfaced for a human.
-
-Write the PR text to `.dev-work/pr-body.md` and read it for privacy before it goes out.
-
-**Back to the thread.** In the todo's `## Development` section: the PR link and the follow-ups to offer at close. Rulings that change the design go in the thread's design (not the staged copy), in its decision log, with why. The rulings themselves live in the PR.
-
-## 6. Iterate on review feedback
+## 5. Iterate on review feedback
 
 The user has reviewed the PR and asked for changes, as review comments on the PR, in a message to you, or both.
 
-1. Enter the worktree. Collect the feedback since the last round: the PR's reviews and review comments (with `gh`), plus anything the user told you. Give each item an id.
-2. If an item changes what the design says, record it in the thread design's decision log first, then copy the design to `.dev-work/design.md` again.
-3. Run `dev-work:execute` with `{ repo, planFile, designFile, baseSha, feedback: [{ id, text }], round: <n> }`. It runs fix rounds on the feedback, each reviewed, with the same cap and breaker as the task loop.
-4. Show the user what changed, item by item, and ask whether to push. This is the one question a round asks, because pushing and replying publish on the user's behalf. If they say yes: push, then reply on the PR to each comment with what was done, or why it wasn't, standing alone for a stranger.
-5. Add a line to the todo's `## Development` section: `Round <n>: <what changed>`, plus any design-changing rulings in the design's decision log.
+1. Recreate and enter the worktree (section 2). Collect the feedback since the last round: the PR's reviews and review comments (with `gh`), plus anything the user told you. Give each item an id.
+2. If an item would change what the design says, put it to the user plainly and wait. Record their decision in `design.md`'s decision log before launching.
+3. Launch `dev-work:execute` with `{ design, inputs, pr_template, base, feedback: [{ id, text }], round: <n>, pr: <the PR's current description: its text, verbatim, not a path to it>, head: <the branch's current commit id> }`. It fixes, reviews the fixes, and returns `replies` (one per item) and `pr_body` (empty unless the description should change).
+4. Show the user what changed, item by item, and ask whether to push. This is the one question a round asks, because pushing and replying publish on the user's behalf. If they say yes: read the replies for anything private, push, update the PR description if `pr_body` isn't empty, and post each reply on its comment.
+5. Add the round to `log.md`'s History as `<date>, review round <n>: <link to the review on GitHub>. <what changed>; pushed` (or `not pushed`). Add the round's `deferred`, `parked` and `surfaced` items to Not fixed in this PR.
 
-## 7. Close
+## 6. At the end of every invocation
 
-**Merged:** present the follow-ups and ask which to track as todos (nothing is filed automatically), then retire the todo with a final status line, `Merged: <PR link>`.
+**Close**, when the PR is merged: list what's under Not fixed in this PR in `log.md` and ask which to track as todos (nothing is filed automatically), tick the ones filed, set the log's Status to `Merged`, add a close line to its History, and retire the todo. When it was closed without merging: ask once whether to retire the todo or park it, do that, set Status to `Closed`, and add a close line to History. Either way, remove any worktree still left for the todo (below). Keep the branch.
 
-**Closed without merging:** ask once whether to retire the todo or park it, and do that, with a final status line, `Closed: <PR link>`.
-
-Either way, then remove the worktree, from outside it. That one step removes everything the run left behind: `.dev-work/` and SDD's files are inside it. Keep the branch.
-
-## 8. At the end of every invocation
-
-1. **Status line** in the todo's `## Development` section, replacing the previous one: `PR open: <link>`, `Stopped: <reason, and what would fix it>`, `Failed at <stage>: <reason>`, `Round <n>: pushed` or `Round <n>: not pushed`, `Merged` or `Closed`.
-2. **Leave the worktree** with `ExitWorktree` and `keep`, so the session returns to where it started and the worktree stays for the PR, a resume or the next round. Skip this after Close, which removed it.
-3. **Report** to the user: what happened, the PR link, and anything that needs them.
+Every other invocation:
+1. **Update `log.md`:** its Status line, the Run line (none once the run has finished), and a History line for this invocation.
+2. **Leave the worktree** with `ExitWorktree` and `keep`, so the session returns to where it started.
+3. **Remove the worktree** once a PR is open (after publishing or a review round), as in section 2: nothing uncommitted, then `git worktree remove --force <path>` from where the session started, which also removes the run's ignored files in `.dev-work/`. Keep the branch. The worktree exists only while develop is working; left in place, it would stop the user checking the branch out anywhere else. After a stop or a failure, keep it for the resume or restart.
+4. **Report** to the user: what happened, the PR link, and anything that needs them.
