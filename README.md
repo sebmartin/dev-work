@@ -38,7 +38,15 @@ sequenceDiagram
             W->>W: Fix, then review the fix
         end
     end
-    W->>W: Review the whole branch, check what's being left out, write the PR description
+    W->>W: Review the whole branch
+    W->>W: Deferral check: what goes wrong if what's being left out ships?
+    alt Real harm that needs a design change
+        W-->>O: Stop
+        O->>You: Put the decision to you
+    else Real harm
+        W->>W: Fix it, then review the fix
+    end
+    W->>W: Write the PR description
     W-->>O: Result and PR text
     O->>G: Push the branch, open a pull request
     O->>T: Log the run, the PR link and what was left unfixed
