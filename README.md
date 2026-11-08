@@ -40,7 +40,7 @@ sequenceDiagram
     W->>W: Review the whole branch, write the PR description
     W-->>S: Result and PR text
     S->>G: Push the branch, open a pull request
-    S->>T: Write the PR link and follow-ups to the todo
+    S->>T: Log the run, the PR link and what was left unfixed
     You->>G: Review and merge
 ```
 
