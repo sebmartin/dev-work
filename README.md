@@ -4,7 +4,7 @@ dev-work is a Claude Code plugin for doing development work with agents. You des
 
 It builds on two other plugins:
 
-- [Superpowers](https://github.com/obra/superpowers) provides the development process: brainstorming a design, writing a plan, implementing the plan task by task with a separate agent reviewing each task, and finishing the branch. dev-work runs these skills and makes the decisions that Superpowers normally asks a person to make.
+- [Superpowers](https://github.com/obra/superpowers) provides the development process: brainstorming a design, writing a plan, and implementing the plan task by task with a separate agent reviewing each task. dev-work runs Superpowers' brainstorming and plan-writing skills, carries out the plan with its own workflow and prompts adapted from Superpowers', and makes the decisions that Superpowers normally asks a person to make.
 - [ai-workspace](https://github.com/sebmartin/ai-workspace-plugin) organizes long-running work into threads. A thread is a folder of markdown files for one topic: notes from past sessions, decisions, todos and other documents. Threads live in a directory called the workspace. In dev-work, each piece of work starts as a todo in a thread, and its design is saved in the same thread.
 
 ## How it works
@@ -68,6 +68,13 @@ Threads can hold private notes, so the agents that write code are not given them
 - The ai-workspace plugin.
 - The GitHub CLI (`gh`), signed in.
 
+## Install
+
+```
+/plugin marketplace add sebmartin/dev-work
+/plugin install dev-work@dev-work
+```
+
 ## Usage
 
 Run the design step in a session with the todo's thread resumed. It can start anywhere:
@@ -85,7 +92,8 @@ Develop needs a session started in a directory that contains the repository: the
 You can follow the run with `/workflows`. It ends with a pull request, or with a report explaining why it stopped. Run the same command again later and develop picks up where the todo stands:
 
 - **After you review the pull request** and leave comments or ask for changes, it fixes them on the same branch, has the fixes reviewed, shows you what changed and asks before pushing and replying to your comments.
-- **If a run stopped or failed,** resume the session that ran it and run the command again: completed steps aren't redone. If that session is gone, develop starts over on a new branch. If it stopped because the design was missing something, fix the design with `/dev-work:design` first.
+- **If a run failed or was interrupted,** resume the session that ran it and run the command again: completed steps aren't redone. If that session is gone, develop starts over on a new branch.
+- **If a run stopped** because the design was missing something, fix the design with `/dev-work:design`, then run develop again: it starts over on a new branch. For any other stop, develop explains it and asks whether to start over.
 - **After you merge,** it lists the follow-ups for you to keep as todos, retires the todo and removes the worktree. The branch is kept.
 
 If the repository has no pull request template, develop uses its own, `templates/pr-template.md`. To use your own instead, put it at `~/.claude/dev-work/pr-template.md`.
