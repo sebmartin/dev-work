@@ -51,7 +51,7 @@ sequenceDiagram
 1. It creates a git worktree on a new branch, under the repository's `.claude/worktrees/`, and moves the session into it.
 2. It launches a dynamic workflow called `execute` with the design's text. The workflow plans the design with Superpowers' writing-plans skill, then builds it the way Superpowers' subagent-driven-development skill describes: for each task, one agent implements it, another reviews it, and a third checks anything the reviewer couldn't verify, with up to five rounds of fixes. Questions that Superpowers would normally leave to a person are decided by a separate agent, and each decision is recorded with its reason. After the last task, the whole branch is reviewed once more, and an agent writes the pull request description.
 3. It reads the commit messages and the description for anything private, pushes the branch and opens the pull request.
-4. It writes the pull request link and any follow-up work back to the todo.
+4. It writes the pull request link and any follow-up work back to the todo, and removes the worktree. The branch stays, so you can check it out to try the change; a review round recreates the worktree.
 
 Inside the workflow, everything passes as text: each agent gets the full instructions and context it needs in its prompt and returns its results directly. dev-work's prompts for the implementer and the reviewers are adapted from Superpowers' own.
 
@@ -91,10 +91,10 @@ Develop needs a session started in a directory that contains the repository: the
 
 You can follow the run with `/workflows`. It ends with a pull request, or with a report explaining why it stopped. Run the same command again later and develop picks up where the todo stands:
 
-- **After you review the pull request** and leave comments or ask for changes, it fixes them on the same branch, has the fixes reviewed, shows you what changed and asks before pushing and replying to your comments.
+- **After you review the pull request** and leave comments or ask for changes, it fixes them on the same branch, has the fixes reviewed, shows you what changed and asks before pushing and replying to your comments. If you have the branch checked out somewhere at the time, it asks you to switch away first.
 - **If a run failed or was interrupted,** resume the session that ran it and run the command again: completed steps aren't redone. If that session is gone, develop starts over on a new branch.
 - **If a run stopped** because the design was missing something, fix the design with `/dev-work:design`, then run develop again: it starts over on a new branch. For any other stop, develop explains it and asks whether to start over.
-- **After you merge,** it lists the follow-ups for you to keep as todos, retires the todo and removes the worktree. The branch is kept.
+- **After you merge,** it lists the follow-ups for you to keep as todos and retires the todo. The branch is kept.
 
 If the repository has no pull request template, develop uses its own, `templates/pr-template.md`. To use your own instead, put it at `~/.claude/dev-work/pr-template.md`.
 

@@ -31,7 +31,7 @@ Read the todo and its design from the thread (resumed in this session). The todo
 | Branch, no PR, the last run stopped for another reason | Report the stop and what would fix it, and ask whether to start over. A relaunch would replay the same stop |
 | Branch, no PR, and the run can't be resumed here | **Start over**: remove the old worktree (keep its branch), then **Start** on `dev-work/<todo slug>-<n+1>` |
 | Open PR with review feedback since the last round | **Iterate**: section 5 |
-| Open PR, no new feedback | Report the PR's state and stop |
+| Open PR, no new feedback | Report the PR's state, remove any worktree left from an earlier run (section 6), and stop |
 | Merged PR | **Close**: section 6, merged |
 | Closed PR, not merged | **Close**: section 6, closed |
 
@@ -39,7 +39,7 @@ Read the todo and its design from the thread (resumed in this session). The todo
 
 - **Task:** the todo must link to its design. If there is none, stop: the design comes first, with the user (`/dev-work:design`).
 - **Repository and target branch:** infer them from the design and the todo; default to the repository's default branch. Ask only if you can't tell. Record the target branch's commit id as the base.
-- **Worktree:** `git worktree add <repository>/.claude/worktrees/<name> -b <branch> <base>`, then hide `.claude/worktrees/` through the repository's local exclude file (`git rev-parse --git-path info/exclude`), never `.gitignore`. Enter it with `EnterWorktree` by path. Never `cd` into it. Then use `superpowers:using-git-worktrees`: it sees the session is already isolated and does the project setup and baseline tests. To iterate or close, enter the existing worktree the same way.
+- **Worktree:** `git worktree add <repository>/.claude/worktrees/<name> -b <branch> <base>`, then hide `.claude/worktrees/` through the repository's local exclude file (`git rev-parse --git-path info/exclude`), never `.gitignore`. Enter it with `EnterWorktree` by path. Never `cd` into it. Then use `superpowers:using-git-worktrees`: it sees the session is already isolated and does the project setup and baseline tests. For a review round, recreate the worktree from the existing branch (`git worktree add <path> <branch>`), stage the inputs again, and enter it the same way. If git refuses because the branch is checked out somewhere else, stop and tell the user where, and ask them to switch that checkout away from the branch.
 - **`.dev-work/`** in the worktree, hidden through the same exclude file: copy the design there as `design.md` (only to tell later whether it changed), and each file in the todo's Inputs list into `.dev-work/inputs/` under the name the list gives. If a listed file is missing, stop and say which.
 - **PR template:** the first that exists: the repository's (`.github/pull_request_template.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `PULL_REQUEST_TEMPLATE.md` or `docs/PULL_REQUEST_TEMPLATE.md`), then the user's (`dev-work/pr-template.md` in their Claude Code configuration directory: `$CLAUDE_CONFIG_DIR`, or `~/.claude`), then this plugin's `templates/pr-template.md` (two levels up from this skill's directory).
 
@@ -66,7 +66,7 @@ It returns:
 
 The user has reviewed the PR and asked for changes, as review comments on the PR, in a message to you, or both.
 
-1. Enter the worktree. Collect the feedback since the last round: the PR's reviews and review comments (with `gh`), plus anything the user told you. Give each item an id.
+1. Recreate and enter the worktree (section 2). Collect the feedback since the last round: the PR's reviews and review comments (with `gh`), plus anything the user told you. Give each item an id.
 2. If an item changes what the design says, record it in the thread design's decision log first.
 3. Launch `dev-work:execute` with `{ design, inputs, pr_template, base, feedback: [{ id, text }], round: <n>, pr: <the PR's current description>, head: <the branch's current commit id> }`. It fixes, reviews the fixes, and returns `replies` (one per item) and `pr_body` (empty unless the description should change).
 4. Show the user what changed, item by item, and ask whether to push. This is the one question a round asks, because pushing and replying publish on the user's behalf. If they say yes: read the replies for anything private, push, update the PR description if `pr_body` isn't empty, and post each reply on its comment.
@@ -74,9 +74,10 @@ The user has reviewed the PR and asked for changes, as review comments on the PR
 
 ## 6. At the end of every invocation
 
-**Close**, when the PR is merged: present the follow-ups and ask which to track as todos (nothing is filed automatically), then retire the todo with a final status line, `Merged: <PR link>`. When it was closed without merging: ask once whether to retire the todo or park it, and do that, with `Closed: <PR link>`. Either way, then remove the worktree with `git worktree remove` from where the session started (no need to enter it), which removes everything the run left behind, `.dev-work/` included. Keep the branch.
+**Close**, when the PR is merged: present the follow-ups and ask which to track as todos (nothing is filed automatically), then retire the todo with a final status line, `Merged: <PR link>`. When it was closed without merging: ask once whether to retire the todo or park it, and do that, with `Closed: <PR link>`. Either way, remove any worktree still left for the todo (below). Keep the branch.
 
 Every other invocation:
 1. **Status line** in the todo's `## Development` section, replacing the previous one: `PR open: <link>`, `Stopped: <reason, and what would fix it>`, `Failed at <stage>: <reason>`, `Round <n>: pushed` or `Round <n>: not pushed`.
-2. **Leave the worktree** with `ExitWorktree` and `keep`, so the session returns to where it started and the worktree stays for review rounds.
-3. **Report** to the user: what happened, the PR link, and anything that needs them.
+2. **Leave the worktree** with `ExitWorktree` and `keep`, so the session returns to where it started.
+3. **Remove the worktree** once a PR is open (after publishing or a review round): check that `git status` in it shows nothing uncommitted, then `git worktree remove --force <path>` from where the session started, which also removes the run's ignored files in `.dev-work/`. Keep the branch. The worktree exists only while develop is working; left in place, it would stop the user checking the branch out anywhere else. After a stop or a failure, keep it for the resume or restart.
+4. **Report** to the user: what happened, the PR link, and anything that needs them.
