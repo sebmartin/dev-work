@@ -35,8 +35,9 @@ PR: <link, or none yet>
 ## Review rounds
 - Round <n> (<date>): <link to the review on GitHub>. <what changed, one line>; pushed or not pushed
 
-## Follow-ups
-- [ ] <follow-up>
+## Not fixed in this PR
+Found during the work and deliberately left out of the PR. At close, the user picks which become todos.
+- [ ] <what it is and why it matters, one line>
 ```
 
 The PR is the record for reviewers and for anyone reading the history later: the decisions, what was left out, every review and reply. The log is the local trail that points to it. Don't write either to the todo.
@@ -85,7 +86,7 @@ It returns:
 
 1. Read every commit message (`git log <base>..HEAD`) and the returned PR title and body for anything private: names of threads, notes or people, or anything that leans on the thread to make sense. Fix the PR text yourself if needed. If a commit message carries something private, stop and report it; don't rewrite history.
 2. Push the branch and open the PR into the target branch with `gh`, using the title and body. If pushing or opening the PR is refused, stop and report which account `gh` used. Don't switch accounts or reach for other credentials.
-3. **Back to the thread:** in `log.md`, the PR link, the run and the follow-ups (the workflow's `follow_ups`, plus anything parked or deferred worth tracking). Rulings that change the design go in `design.md`'s decision log, with why.
+3. **Back to the thread:** in `log.md`, the PR link, the run, and under Not fixed in this PR the workflow's `follow_ups` plus anything parked or deferred worth tracking. Rulings that change the design go in `design.md`'s decision log, with why.
 
 ## 5. Iterate on review feedback
 
@@ -99,7 +100,7 @@ The user has reviewed the PR and asked for changes, as review comments on the PR
 
 ## 6. At the end of every invocation
 
-**Close**, when the PR is merged: present the follow-ups from `log.md` and ask which to track as todos (nothing is filed automatically), tick the ones filed, set the log's Status to `Merged`, and retire the todo. When it was closed without merging: ask once whether to retire the todo or park it, do that, and set Status to `Closed`. Either way, remove any worktree still left for the todo (below). Keep the branch.
+**Close**, when the PR is merged: list what's under Not fixed in this PR in `log.md` and ask which to track as todos (nothing is filed automatically), tick the ones filed, set the log's Status to `Merged`, and retire the todo. When it was closed without merging: ask once whether to retire the todo or park it, do that, and set Status to `Closed`. Either way, remove any worktree still left for the todo (below). Keep the branch.
 
 Every other invocation:
 1. **Update `log.md`:** its Status line, and a line under Runs for this invocation.
