@@ -98,7 +98,7 @@ The user has reviewed the PR and asked for changes, as review comments on the PR
 
 ## 6. At the end of every invocation
 
-**Close**, when the PR is merged: list what's under Not fixed in this PR in `log.md` and ask which to track as todos (nothing is filed automatically), tick the ones filed, set the log's Status to `Merged`, and retire the todo. When it was closed without merging: ask once whether to retire the todo or park it, do that, and set Status to `Closed`. Either way, remove any worktree still left for the todo (below). Keep the branch.
+**Close**, when the PR is merged: list what's under Not fixed in this PR in `log.md` and ask which to track as todos (nothing is filed automatically), tick the ones filed, set the log's Status to `Merged`, add a close line to its History, and retire the todo. When it was closed without merging: ask once whether to retire the todo or park it, do that, set Status to `Closed`, and add a close line to History. Either way, remove any worktree still left for the todo (below). Keep the branch.
 
 Every other invocation:
 1. **Update `log.md`:** its Status line, and a History line for this invocation.
