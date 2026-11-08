@@ -26,6 +26,7 @@ Each todo developed with dev-work has a folder in its thread, `artifacts/dev-wor
 ```
 # Log
 
+Todo: <the todo's title>
 Status: <one line: Running, PR open, Stopped: <reason and what would fix it>, Failed at <stage>: <reason>, Merged, Closed>
 PR: <link, or none yet>
 
