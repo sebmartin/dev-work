@@ -560,7 +560,7 @@ ${A.design}
 
 ## Return
 
-Don't save the plan to a file: return it, as below.
+Write the full plan, overview and tasks, to .dev-work/implementation-plan.md in this checkout, for the user to read while the work runs; nothing reads it back. Then return it, as below.
 
 - overview: everything in the plan before the first task (title, Goal, Architecture, Tech Stack, Global Constraints, Review Focus, file structure).
 - global_constraints and review_focus: those two sections' text.

@@ -104,6 +104,8 @@ You can follow the run with `/workflows`. It ends with a pull request, or with a
 - **If a run stopped** because the design was missing something, fix the design with `/dev-work:design`, then run develop again: it starts over on a new branch. For any other stop, develop explains it and asks whether to start over.
 - **After you merge,** it lists what the log says wasn't fixed in the pull request, asks which to keep as todos, and retires the todo. The branch is kept.
 
+While a run is building, the plan it's working from is in the worktree at `.dev-work/implementation-plan.md`; when the run ends it's copied next to the design as `implementation-plan.md`.
+
 To see where a piece of work stands, open its `log.md`: the status, the pull request, and a dated history with a line for each time develop ran, review rounds included.
 
 If the repository has no pull request template, develop uses its own, `templates/pr-template.md`. To use your own instead, put it at `~/.claude/dev-work/pr-template.md`.
