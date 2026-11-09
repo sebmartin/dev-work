@@ -1,6 +1,6 @@
 export const meta = {
   name: 'execute',
-  description: 'dev-work: plan a design and build it the way superpowers:subagent-driven-development does, with this script as its controller',
+  description: 'Plans a design and builds it task by task, reviewing each task and then the whole branch, and writes the pull request description',
   whenToUse: 'Started by the dev-work develop skill.',
   phases: [{ title: 'Plan' }, { title: 'Tasks' }, { title: 'Final review' }, { title: 'Write-up' }, { title: 'Review feedback' }],
 }

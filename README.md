@@ -107,14 +107,3 @@ You can follow the run with `/workflows`. It ends with a pull request, or with a
 To see where a piece of work stands, open its `log.md`: the status, the pull request, and a dated history with a line for each time develop ran, review rounds included.
 
 If the repository has no pull request template, develop uses its own, `templates/pr-template.md`. To use your own instead, put it at `~/.claude/dev-work/pr-template.md`.
-
-## Files
-
-```
-skills/design/SKILL.md                  /dev-work:design
-skills/design/builder-check-prompt.md   the prompt for the agent that checks a design is complete
-skills/develop/SKILL.md                 /dev-work:develop
-agents/worker.md                        the agent type used for planning, implementing and reviewing
-workflows/execute.js                    the execute workflow, with the agents' prompts
-templates/pr-template.md                the default pull request description
-```
