@@ -44,7 +44,8 @@ const IMPL = obj({
   head_sha: SHA,
   summary: { type: 'string', description: 'under 15 lines: commits (short id and subject), a one-line test summary, concerns' },
   report: { type: 'string', description: 'the full report described under Report Format' },
-}, ['status', 'head_sha', 'summary', 'report'])
+  red: { type: 'string', description: 'the test command and its failing output before you implemented, or "not applicable: " and why' },
+}, ['status', 'head_sha', 'summary', 'report', 'red'])
 const REVIEW = obj({ spec_verdict: { type: 'string', enum: ['pass', 'fail'] }, cannot_verify: arr(str), quality_verdict: { type: 'string', enum: ['Approved', 'Needs fixes'] }, findings: arr(FINDING) })
 const REREVIEW = obj({ results: arr(obj({ id: str, addressed: bool, evidence: { type: 'string', description: 'file:line showing the fix, or the evidence that it should not change' } })), new_findings: arr(FINDING), out_of_scope: arr(str) })
 // A finding counts as addressed only with evidence: a bare "addressed" from a quick look doesn't close it.
@@ -134,6 +135,8 @@ Return your report in the report field (not in a file):
 - Files changed
 - Self-review findings, if any
 - Any issues or concerns
+
+Return in red the failing run that shows your new tests check the new code: the command and the relevant failing output, captured before you implemented. If no test could fail first (the task changes no behaviour, or it is a fix with no new test), write "not applicable: " and why.
 
 Return in summary, under 15 lines: the commits created (short id and subject), a one-line test summary, and your concerns. head_sha is the full commit id from \`git rev-parse HEAD\` when you finish.
 
@@ -616,7 +619,7 @@ for (const t of plan.tasks) {
 
   // 3. Review the task
   const reviewer = atLeast(model, 'sonnet')
-  const review = await ag(taskReviewerPrompt({ n, title: t.title, text: t.text, constraints, report: impl.report, concerns: impl.status === 'DONE_WITH_CONCERNS' ? impl.summary : '', base, head, evidenceOnly }),
+  const review = await ag(taskReviewerPrompt({ n, title: t.title, text: t.text, constraints, report: `${impl.report}\n\nFailing run before implementing (as reported):\n${impl.red}`, concerns: impl.status === 'DONE_WITH_CONCERNS' ? impl.summary : '', base, head, evidenceOnly }),
     { label: `review-${n}`, phase: 'Tasks', schema: REVIEW, model: reviewer, effort: effort(reviewer) })
   if (!review) return result('failed', { stage: `review ${n}` })
   entry.review = `${review.spec_verdict}, ${review.quality_verdict}`
