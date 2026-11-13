@@ -13,7 +13,7 @@ People often haven't finished working out what they want. Good questions help th
 
 ## Before
 
-- **Task:** a thread todo stating the intent. Work in its thread (resume it with the ai-workspace threads skill if it isn't already), so the conversation can draw on the thread's notes and decisions. Set the todo's state to `started`.
+- **Task:** a thread todo stating the intent. If no todo is named, work out which one from the conversation or the resumed thread, say which one you picked, and wait for the user to confirm before doing anything else. Work in its thread (resume it with the ai-workspace threads skill if it isn't already), so the conversation can draw on the thread's notes and decisions. Set the todo's state to `started`.
 - **An existing design:** if the todo already links to a dev-work folder with a `design.md`, work from that design and keep its folder. If develop has already run on it, record each change in its `## Decision log` with the reason, as the user decides it.
 
 ## Look before you ask

@@ -51,6 +51,8 @@ The PR is the record for reviewers and for anyone reading the history later: the
 
 Check where the session started: it must be a directory that contains the repository (the folder holding the user's repositories, or the repository itself), because the session has to enter a worktree of that repository. If it isn't, stop: tell the user to start a session there, resume the thread, and run `/dev-work:develop <todo>`.
 
+If no todo is named, work out which one from the conversation or the resumed thread, say which one you picked, and wait for the user to confirm before doing anything else.
+
 Read the todo, its loop folder's `design.md` and `log.md` (if there is one) from the thread, resumed in this session; the log's Status says how the last run ended. The todo's branch is `dev-work/<todo slug>`, or `dev-work/<todo slug>-<n>` after a restart; the highest `<n>` is the current one. Its worktree is `<repository>/.claude/worktrees/` plus the branch name with `/` replaced by `-`.
 
 | What you find | What to do |
