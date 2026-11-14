@@ -338,3 +338,15 @@ test('a re-planned task with no disposition is built', async () => {
   assert.ok(calls.some(c => c.label === 'implement-1') && calls.some(c => c.label === 'implement-2'))
   assert.deepEqual(result.replan_counts, { kept: 0, revised: 0, new: 2, dropped: 0 })
 })
+
+test('a re-plan without a valid head fails before planning', async () => {
+  for (const head of [undefined, '', 'HEAD', sha('d').slice(0, 7)]) {
+    const { result, calls } = await run({ ...replanArgs, replan: { ...replanArgs.replan, head } })
+    assert.equal(calls.length, 0, String(head))
+    assert.equal(result.status, 'failed')
+    assert.equal(result.stage, 're-plan')
+    assert.match(result.error, /head/)
+    assert.equal(result.head, BASE)
+    assert.deepEqual(result.tasks, [])
+  }
+})

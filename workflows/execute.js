@@ -77,6 +77,9 @@ const rule = (...lines) => rulings.push(...lines)
 // Re-plan mode: the earlier run's rulings and findings carry over, marked as such, and the branch's
 // current commit is where building resumes.
 const RP = A.replan || null
+// A re-plan resumes building from replan.head, so a missing or malformed one fails the run before the
+// planner instead of reviewing the wrong range.
+const replanHeadOk = !!RP && /^[0-9a-f]{40}$/.test(RP.head || '')
 if (RP) {
   rule(...(RP.rulings || []).map(x => `Before the re-plan: ${x}`))
   deferred.push(...(RP.deferred || []).map(x => `before the re-plan: ${x}`))
@@ -90,7 +93,7 @@ const skipped = t => ['kept', 'dropped'].includes(disposition(t))
 let plan = null, planText = ''
 const entries = []            // outcomes of the tasks finished so far
 let current = null            // { n, base } of the task in hand
-let branchHead = RP ? RP.head : A.base
+let branchHead = replanHeadOk ? RP.head : A.base
 const verdicts = []
 const outcomes = () => !plan ? [] : plan.tasks.map(t => {
   const done = entries.find(e => e.task === t.n)
@@ -545,6 +548,7 @@ For each item, write a short reply saying what was done, or why it wasn't, stand
 }
 
 // ---------- Plan ----------
+if (RP && !replanHeadOk) return result('failed', { stage: 're-plan', error: `replan.head must be the branch's full 40-character commit id; got ${JSON.stringify(RP.head)}` })
 // In re-plan mode the planner also gets what the earlier run built and why the design changed.
 const listed = xs => (xs || []).map(x => `- ${x}`).join('\n') || '(none)'
 const outcomeLine = o => `- Task ${o.task}: ${o.title}: ${o.state}${o.commits ? `, commits ${o.commits}` : ''}${o.review ? `, review ${o.review}` : ''}${o.reason ? `, ${o.reason}` : ''}`
