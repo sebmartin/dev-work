@@ -51,7 +51,10 @@ const REVIEW = obj({ spec_verdict: { type: 'string', enum: ['pass', 'fail'] }, c
 const REREVIEW = obj({ results: arr(obj({ id: str, addressed: bool, evidence: { type: 'string', description: 'file:line showing the fix, or the evidence that it should not change' } })), new_findings: arr(FINDING), out_of_scope: arr(str) })
 // A finding counts as addressed only with evidence: a bare "addressed" from a quick look doesn't close it.
 const closed = rr => new Set(rr.results.filter(r => r.addressed && (r.evidence || '').trim()).map(r => r.id))
-const RULINGS = { rulings: arr(str), stop: bool, stop_reason: str }
+const QUESTION = obj({ question: str, reason: { type: 'string', enum: ['expensive to reverse', 'scope creep'] }, why: str, if_guessed: str, options: arr(str), recommendation: str })
+const RULINGS = { rulings: arr(str), question: QUESTION }
+const asks = r => !!(r && r.question && typeof r.question.question === 'string' && r.question.question.trim())
+const ASKING = `Return a question for the user only when a wrong guess would be expensive to reverse (a large part would have to be rebuilt, or something would ship that loses data or breaks users' trust), or when doing it would be significant scope creep beyond what the design asked for, so the user decides whether it is now or later. Anything cheap to reverse is a ruling, not a question. A question gives the question in plain terms, reason (expensive to reverse or scope creep) and why, if_guessed (what goes wrong if you guess), the options, and your recommendation. Leave question out when you have none.`
 
 const LOCAL = 'Work only in this checkout, your current directory: commit on the current branch, never push or touch a remote. Add every change as a new commit: never amend, rebase, reset or otherwise rewrite commits, and never force-add ignored files (no `git add -f`). Put any scratch files in .dev-work/scratch/ in this checkout, never anywhere else. Write commit messages for a stranger: what changed and why, in their own terms.'
 const NO_SUB = 'Do all of this yourself. Never spawn a subagent to do part of it, and above all never spawn a reviewer to check your work.'
@@ -76,6 +79,9 @@ const outcomes = () => !plan ? [] : plan.tasks.map(t => {
   return { task: t.n, title: t.title, state: 'not started' }
 })
 const result = (status, extra = {}) => ({ status, head: branchHead, plan: planText, tasks: outcomes(), verdicts, rulings, parked, deferred, carried: carry, ...extra })
+const pause = (question, at, extra = {}) => result('paused', { at, question, ...extra })
+// A pause with no question from an agent: the run says what it could not settle.
+const plainQuestion = (question, ifGuessed) => ({ question, reason: 'expensive to reverse', why: 'the run could not settle this without guessing', if_guessed: ifGuessed, options: [], recommendation: '(none given)' })
 
 // ---------- Prompts ----------
 const implementerPrompt = ({ n, title, text, context, constraints, applicable, fix }) => `You are implementing Task ${n}: ${title}
@@ -332,13 +338,8 @@ ${rulings.join('\n') || '(none)'}
 
 ${question}
 
-Write every decision as "Ruling: <what you decided>; why: <why>; cost if wrong: <what it costs if wrong>". Decide; nobody will answer questions. Set stop only for an irreversible or destructive operation, a security-sensitive action, or a plan so broken that every path forward is a guess, and say why in stop_reason.`,
+Write every decision as "Ruling: <what you decided>; why: <why>; cost if wrong: <what it costs if wrong>". Decide everything that is cheap to reverse; nobody answers questions while the run is going. ${ASKING}`,
   { label, phase, schema, model: 'opus', effort: 'high' })
-
-// A stop says what kind it is, so the session doesn't have to guess from the text: 'design' needs a
-// decision about the design from the user, 'ruler' is the ruler stopping on a risk or a broken plan,
-// 'blocked' is an implementer that couldn't finish.
-const stop = (reason, at, kind = 'ruler') => result('stopped', { at, reason, kind })
 
 // Fix rounds on a set of findings: a fresh implementer per round (rounds 1-3 on the given model, 4-5 one
 // tier up), each followed by a scoped re-review. Returns the findings still open and the new head.
@@ -369,7 +370,7 @@ const fixLoop = async ({ open, head, model, label, phase, fixPrompt, task, idPre
 const breaker = async (context, open, choices, label, phase) => {
   const r = await ruler(`${context} Adjudicate each open finding: park it (the reviewer is wrong or the point is contestable, or it is real but nothing downstream builds on it), or ${choices === 'carry' ? 'if it is real and load-bearing, rule on the smallest change that unblocks the dependent work; that ruling is carried into later tasks' : 'if it is real and load-bearing, rule on it; those are surfaced to the user'}.
 ${fmt(open)}`,
-    obj({ decisions: arr(obj({ id: str, decision: { type: 'string', enum: ['park', choices] }, ruling: str })), ...RULINGS }, ['decisions', 'rulings', 'stop']), label, phase)
+    obj({ decisions: arr(obj({ id: str, decision: { type: 'string', enum: ['park', choices] }, ruling: str })), ...RULINGS }, ['decisions', 'rulings']), label, phase)
   if (r) {
     const decided = new Set(r.decisions.map(d => d.id))
     open.filter(f => !decided.has(f.id)).forEach(f => r.decisions.push({ id: f.id, decision: choices === 'carry' ? 'carry' : 'surface', ruling: 'No ruling was returned for this finding; it stays open.' }))
@@ -406,7 +407,7 @@ Read only.`,
   // A finding the check skipped is treated as needing resolution: it fails closed.
   items.filter(i => !decided.has(i.id)).forEach(i => c.items.push({ id: i.id, consequence: 'not assessed', verdict: 'resolve', needs_design_change: false, reason: 'the check returned no verdict' }))
   const design = c.items.filter(x => x.verdict === 'resolve' && x.needs_design_change)
-  if (design.length) return { head, stop: `These findings would cause real harm if shipped, and fixing them needs a design decision:\n${design.map(x => `- ${byId[x.id]}\n  What goes wrong: ${x.consequence}`).join('\n')}` }
+  if (design.length) return { head, question: plainQuestion(`These findings would cause real harm if shipped, and fixing them needs a design decision:\n${design.map(x => `- ${byId[x.id]}\n  What goes wrong: ${x.consequence}`).join('\n')}`, 'the harm ships, or the fix goes beyond the design') }
   const fixList = c.items.filter(x => x.verdict === 'resolve').map(x => ({ id: x.id, severity: 'Important', text: `${byId[x.id]} What goes wrong if shipped: ${x.consequence}` }))
   deferred.length = 0; parked.length = 0
   c.items.filter(x => x.verdict === 'defer').forEach(x => (fromId[x.id] === 'parked' ? parked : deferred).push(`${byId[x.id]} (left out because: ${x.reason})`))
@@ -434,7 +435,7 @@ Return in report what changed per finding, the covering tests, the command and t
   if (!rr) return { head: fix.head_sha, failed: 'deferral re-review' }
   const addressed = closed(rr)
   const left = fixList.filter(f => !addressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
-  if (left.length) return { head: fix.head_sha, stop: `These findings cause real harm and are still open after a fix:\n${fmt(left)}` }
+  if (left.length) return { head: fix.head_sha, question: plainQuestion(`These findings cause real harm and are still open after a fix:\n${fmt(left)}`, 'the harm ships in the pull request') }
   rr.new_findings.filter(f => f.severity === 'Minor').map(f => `${f.id} ${f.text}`).concat(rr.out_of_scope).forEach(x => deferred.push(`${x} (found after the deferral check, not assessed)`))
   return { head: fix.head_sha, fixed: fix.report }
 }
@@ -480,18 +481,18 @@ Return in report, per item: what changed, or why nothing should change, with evi
   if (loop.open.length) {
     const r = await breaker(`Review round ${R} on the pull request hit its cap of ${CAP} fix rounds.`, loop.open, 'surface', 'round-breaker', 'Review feedback')
     if (!r) return result('failed', { stage: 'round breaker' })
-    if (r.stop) return stop(r.stop_reason, `round ${R}`)
+    rule(...r.rulings.map(x => `Round ${R}: ${x}`))
+    if (asks(r)) return pause(r.question, `round ${R}`, { round: R, feedback: A.feedback })
     for (const d of r.decisions) {
       const f = loop.open.find(x => x.id === d.id) || { id: d.id, text: '' }
       outcome[d.id] = `${d.decision}: ${d.ruling}`
       if (d.decision === 'park') { rule(`Round ${R}: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`round ${R} ${f.id}: ${f.text}; ruling: ${d.ruling}`) }
       else { rule(`Round ${R}: ${d.ruling}`); surfaced.push(`${f.id}: ${f.text}; ruling: ${d.ruling}`) }
     }
-    rule(...r.rulings.map(x => `Round ${R}: ${x}`))
   }
   const dc = await deferralCheck(loop.head, 'Review feedback')
   if (dc.failed) return result('failed', { stage: dc.failed })
-  if (dc.stop) return stop(dc.stop, `round ${R} deferral check`, 'design')
+  if (dc.question) return pause(dc.question, `round ${R} deferral check`, { round: R, feedback: A.feedback })
   loop.head = dc.head
   phase('Write-up')
   const w = await ag(`Write the replies to a review of a pull request, for a reader who knows only the pull request. Read what the round changed with \`git log\` and \`git diff\` on this branch as needed; change nothing.
@@ -602,11 +603,11 @@ const pre = await ruler(`Before Task 1 is dispatched, scan the plan above once f
 The scan's output is a table, not a verdict: one row for every pair of tasks that share a file or an interface (the two tasks, what one produces against what the other consumes, and what you found), and one row for every task (whether its own text agrees with itself: the tests it specifies against the code it specifies, the files it creates against the files it later touches). "The scan is clean" without those rows is not a scan you ran. Rule on every conflict the scan surfaces, against the plan text that mandates it.
 
 Then choose each task's implementer model, using the least powerful model that can handle it: haiku for mechanical tasks (isolated functions, clear specs, 1-2 files, or the task's text contains the complete code), sonnet for integration and judgment tasks (multi-file coordination, pattern matching, debugging), opus for architecture and design tasks. Return only the rulings you made now.`,
-  obj({ scan: arr(str), task_models: arr(obj({ task: int, model: { type: 'string', enum: TIERS } })), ...RULINGS }, ['scan', 'task_models', 'rulings', 'stop']),
+  obj({ scan: arr(str), task_models: arr(obj({ task: int, model: { type: 'string', enum: TIERS } })), ...RULINGS }, ['scan', 'task_models', 'rulings']),
   'pre-flight', 'Plan')
 if (!pre) return result('failed', { stage: 'pre-flight' })
 rule(...pre.rulings.map(x => `Pre-flight: ${x}`))
-if (pre.stop) return stop(pre.stop_reason, 'pre-flight')
+if (asks(pre)) return pause(pre.question, 'pre-flight')
 const constraints = plan.global_constraints || '(none)'
 const modelFor = n => (pre.task_models.find(t => t.task === n) || {}).model || 'sonnet'
 
@@ -628,12 +629,18 @@ for (const t of plan.tasks) {
     if (!impl) return result('failed', { stage: `implement ${n}` })
     branchHead = impl.head_sha
     if (impl.status === 'DONE' || impl.status === 'DONE_WITH_CONCERNS') break
-    if (attempt === 3) return stop(`task ${n}'s implementer still ${impl.status} after 3 dispatches: ${impl.summary}`, `task ${n}`, 'blocked')
+    if (attempt === 3) {
+      const q = await ruler(`Task ${n}'s implementer (${model}) is still ${impl.status} after 3 dispatches, and there will be no further dispatch.\nIts summary: ${impl.summary}\nIts report:\n${impl.report}\nPut to the user the question that would let the task be built.`,
+        obj({ ...RULINGS }, ['rulings', 'question']), `ask-${n}`, 'Tasks')
+      if (!q) return result('failed', { stage: `ruling on task ${n}` })
+      rule(...(q.rulings || []).map(x => `Task ${n}: ${x}`))
+      return pause(asks(q) ? q.question : plainQuestion(`Task ${n} could not be built: the implementer is still ${impl.status} after 3 dispatches: ${impl.summary}`, 'the task stays unbuilt and the tasks after it may build on a guess'), `task ${n}`)
+    }
     const r = await ruler(`Task ${n}'s implementer (${model}) reported ${impl.status}.\nIts summary: ${impl.summary}\nIts report:\n${impl.report}\nGive the missing context or your correction of the plan as answer, and set escalate if the task needs more reasoning than ${model} has.`,
-      obj({ answer: str, escalate: bool, ...RULINGS }, ['answer', 'escalate', 'rulings', 'stop']), `rule-${n}-a${attempt}`, 'Tasks')
+      obj({ answer: str, escalate: bool, ...RULINGS }, ['answer', 'escalate', 'rulings']), `rule-${n}-a${attempt}`, 'Tasks')
     if (!r) return result('failed', { stage: `ruling on task ${n}` })
-    if (r.stop) return stop(r.stop_reason, `task ${n}`)
     rule(...r.rulings.map(x => `Task ${n}: ${x}`))
+    if (asks(r)) return pause(r.question, `task ${n}`)
     if (r.escalate) model = up(model)
     answer = r.answer
   }
@@ -659,10 +666,10 @@ for (const t of plan.tasks) {
   const mandated = open.filter(f => f.plan_mandated)
   if (mandated.length) {
     const r = await ruler(`Task ${n} (commits ${base}..${head}). Rule on each plan-mandated finding against the plan text that mandates it; return in keep the ids that should go to the fix loop.\n${fmt(mandated)}`,
-      obj({ keep: arr(str), ...RULINGS }, ['keep', 'rulings', 'stop']), `resolve-${n}`, 'Tasks')
+      obj({ keep: arr(str), ...RULINGS }, ['keep', 'rulings']), `resolve-${n}`, 'Tasks')
     if (!r) return result('failed', { stage: `resolve ${n}` })
-    if (r.stop) return stop(r.stop_reason, `task ${n}`)
     rule(...r.rulings.map(x => `Task ${n}: ${x}`))
+    if (asks(r)) return pause(r.question, `task ${n}`)
     open = open.filter(f => !f.plan_mandated || r.keep.includes(f.id))
   }
 
@@ -691,13 +698,13 @@ ${fmt(items)}`,
   if (open.length) {
     const r = await breaker(`Task ${n}'s fix loop hit its cap of ${CAP} rounds (commits ${base}..${head}).`, open, 'carry', `breaker-${n}`, 'Tasks')
     if (!r) return result('failed', { stage: `breaker ${n}` })
-    if (r.stop) return stop(r.stop_reason, `task ${n}`)
+    rule(...r.rulings.map(x => `Task ${n}: ${x}`))
+    if (asks(r)) return pause(r.question, `task ${n}`)
     for (const d of r.decisions) {
       const f = open.find(x => x.id === d.id) || { id: d.id, text: '' }
       if (d.decision === 'park') { rule(`Task ${n}: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`T${n} ${f.id}: ${f.text}; ruling: ${d.ruling}`) }
       else { rule(`Task ${n}: ${d.ruling}`); carry.push(`Task ${n}: ${d.ruling}`) }
     }
-    rule(...r.rulings.map(x => `Task ${n}: ${x}`))
     entry.parked = open.length
   }
   entry.commits = same(head, base) ? 'none, evidence reviewed' : `${base.slice(0, 7)}..${head.slice(0, 7)}`
@@ -747,19 +754,19 @@ Return in report what changed per finding, the covering tests, the command and t
   if (finalOpen.length) {
     const r = await breaker(`The final whole-branch review's single fix wave left these findings open. There is no second wave.`, finalOpen, 'surface', 'final-breaker', 'Final review')
     if (!r) return result('failed', { stage: 'final breaker' })
-    if (r.stop) return stop(r.stop_reason, 'final')
+    rule(...r.rulings.map(x => `Final: ${x}`))
+    if (asks(r)) return pause(r.question, 'final')
     for (const d of r.decisions) {
       const f = finalOpen.find(x => x.id === d.id) || { id: d.id, text: '' }
       if (d.decision === 'park') { rule(`Final: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`final ${f.id}: ${f.text}; ruling: ${d.ruling}`) }
       else { rule(`Final: ${d.ruling}`); surfaced.push(`${f.id}: ${f.text}; ruling: ${d.ruling}`) }
     }
-    rule(...r.rulings.map(x => `Final: ${x}`))
   }
 }
 
 const dc = await deferralCheck(lastHead, 'Final review')
 if (dc.failed) return result('failed', { stage: dc.failed })
-if (dc.stop) return stop(dc.stop, 'deferral check', 'design')
+if (dc.question) return pause(dc.question, 'deferral check')
 lastHead = dc.head
 if (dc.fixed) finalFix = `${finalFix}\n\nFixed after the deferral check:\n${dc.fixed}`
 

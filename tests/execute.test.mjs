@@ -16,7 +16,7 @@ const BASE = sha('e')
 const defaults = {
   plan: () => ({ overview: 'OVERVIEW', global_constraints: 'GC', review_focus: 'RF', assumptions: ['an assumption'], follow_ups: ['a follow-up'],
     tasks: [{ n: 1, title: 'one', text: 'TASK ONE' }, { n: 2, title: 'two', text: 'TASK TWO' }] }),
-  'pre-flight': () => ({ scan: ['row'], task_models: [{ task: 1, model: 'sonnet' }, { task: 2, model: 'haiku' }], rulings: ['Ruling: PREFLIGHT-RULING; why: w; cost if wrong: c'], stop: false, stop_reason: '' }),
+  'pre-flight': () => ({ scan: ['row'], task_models: [{ task: 1, model: 'sonnet' }, { task: 2, model: 'haiku' }], rulings: ['Ruling: PREFLIGHT-RULING; why: w; cost if wrong: c'] }),
   implement: (p, label) => ({ status: 'DONE', head_sha: label === 'implement-1' ? sha('a') : sha('b'), summary: 'ok', report: `REPORT-OF-${label}`, red: `RED-OF-${label}` }),
   review: () => ({ spec_verdict: 'pass', cannot_verify: [], quality_verdict: 'Approved', findings: [] }),
   verify: () => ({ gaps: [] }),
@@ -123,7 +123,7 @@ test('a review finding gets a fix round and a re-review', async () => {
 
 test('a finding marked addressed without evidence stays open', async () => {
   const noEvidence = { 're-review': p => ({ results: [...p.matchAll(/^- ([A-Z0-9][\w-]*) \(/gm)].map(m => ({ id: m[1], addressed: true, evidence: '' })), new_findings: [], out_of_scope: [] }),
-    'breaker-1': () => ({ decisions: [{ id: 'T1-1', decision: 'park', ruling: 'parked' }], rulings: [], stop: false, stop_reason: '' }) }
+    'breaker-1': () => ({ decisions: [{ id: 'T1-1', decision: 'park', ruling: 'parked' }], rulings: [] }) }
   const { calls } = await run(start, { ...oneFinding, ...noEvidence })
   const labels = calls.map(c => c.label)
   assert.ok(labels.includes('task-1-fix-r2'), 'a second fix round runs')
@@ -155,28 +155,59 @@ test('a deferred finding keeps the reason it was left out', async () => {
   assert.match(result.deferred[0], /a nit.*left out because: harmless/)
 })
 
-test('a design question at the deferral check stops with kind design', async () => {
+test('a design question at the deferral check pauses', async () => {
   const minor = { 'review-1': () => ({ spec_verdict: 'pass', cannot_verify: [], quality_verdict: 'Approved', findings: [{ id: 'T1-1', severity: 'Minor', text: 'x' }] }),
     'deferral-check': () => ({ items: [{ id: 'D-1', consequence: 'wrong behaviour', verdict: 'resolve', needs_design_change: true, reason: '' }] }) }
-  const { result } = await run(start, minor)
-  assert.equal(result.status, 'stopped')
-  assert.equal(result.kind, 'design')
+  const { result, calls } = await run(start, minor)
+  assert.equal(result.status, 'paused')
+  assert.equal(result.at, 'deferral check')
+  assert.ok(!calls.some(c => c.label === 'write-up'))
 })
 
-test('the ruler stopping at pre-flight stops with kind ruler', async () => {
-  const { result, calls } = await run(start, { 'pre-flight': () => ({ scan: [], task_models: [], rulings: [], stop: true, stop_reason: 'broken plan' }) })
-  assert.equal(result.status, 'stopped')
-  assert.equal(result.kind, 'ruler')
+const asking = { question: 'Keep the old flag?', reason: 'expensive to reverse', why: 'w', if_guessed: 'users lose settings', options: ['keep', 'drop'], recommendation: 'keep' }
+const blocked = (p, label) => ({ status: 'BLOCKED', head_sha: sha('b'), summary: 'stuck', report: 'stuck', red: 'not applicable: blocked' })
+
+test('a ruler question at a task pauses the run and keeps everything done so far', async () => {
+  const { result, calls } = await run(start, { 'implement-2': blocked,
+    'rule-2-a1': () => ({ answer: '', escalate: false, rulings: ['Ruling: R2; why: w; cost if wrong: c'], question: asking }) })
+  assert.equal(result.status, 'paused')
+  assert.deepEqual(result.question, asking)
+  assert.equal(result.at, 'task 2')
+  assert.equal(result.head, sha('b'))
+  assert.deepEqual(result.tasks.map(t => t.state), ['done', 'in progress'])
+  assert.match(result.rulings.join('\n'), /PREFLIGHT-RULING[\s\S]*R2/)
+  assert.ok(!calls.some(c => ['final-review', 'write-up'].includes(c.label)))
+})
+
+test('the ruler asking at pre-flight pauses before any task is built', async () => {
+  const { result, calls } = await run(start, { 'pre-flight': () => ({ scan: [], task_models: [], rulings: [], question: asking }) })
+  assert.equal(result.status, 'paused')
+  assert.equal(result.at, 'pre-flight')
+  assert.deepEqual(result.tasks.map(t => t.state), ['not started', 'not started'])
   assert.ok(!calls.some(c => c.label.startsWith('implement-')))
 })
 
-test('an implementer still blocked after three dispatches stops with kind blocked', async () => {
-  const blocked = { implement: (p, label) => ({ status: 'BLOCKED', head_sha: BASE, summary: 'stuck', report: 'stuck', red: 'not applicable: blocked' }),
-    'rule-1-a1': () => ({ answer: 'try again', escalate: false, rulings: [], stop: false, stop_reason: '' }),
-    'rule-1-a2': () => ({ answer: 'try again', escalate: false, rulings: [], stop: false, stop_reason: '' }) }
-  const { result } = await run(start, blocked)
-  assert.equal(result.status, 'stopped')
-  assert.equal(result.kind, 'blocked')
+test('the ruler offers a question instead of a stop', async () => {
+  const { calls, prompt } = await run(start)
+  const schema = calls.find(c => c.label === 'pre-flight').opts.schema
+  assert.ok('question' in schema.properties && !('stop' in schema.properties))
+  assert.match(prompt('pre-flight'), /expensive to reverse/)
+  assert.match(prompt('pre-flight'), /scope creep/)
+})
+
+test('an implementer still blocked after three dispatches produces a question', async () => {
+  const again = () => ({ answer: 'try again', escalate: false, rulings: [] })
+  const { result, calls } = await run(start, { implement: blocked, 'rule-1-a1': again, 'rule-1-a2': again, 'ask-1': () => ({ rulings: [], question: asking }) })
+  assert.equal(result.status, 'paused')
+  assert.deepEqual(result.question, asking)
+  assert.ok(calls.some(c => c.label === 'ask-1'))
+})
+
+test('an implementer still blocked with no question from the ruler still pauses', async () => {
+  const again = () => ({ answer: 'try again', escalate: false, rulings: [] })
+  const { result } = await run(start, { implement: blocked, 'rule-1-a1': again, 'rule-1-a2': again, 'ask-1': () => ({ rulings: [] }) })
+  assert.equal(result.status, 'paused')
+  assert.match(result.question.question, /Task 1/)
 })
 
 const round = { ...start, feedback: [{ id: 'PR1-1', text: 'rename x' }], round: 1, pr: 'THE-PR-TEXT', head: sha('f') }
@@ -200,4 +231,14 @@ test('a failed review round returns well-formed state', async () => {
   const { result } = await run(round, { 'round-1-write-up': () => null })
   assert.equal(result.status, 'failed')
   assert.deepEqual(result.tasks, [])
+})
+
+test('a question in a review round pauses it with the round and its feedback', async () => {
+  const { result, calls } = await run(round, {
+    're-review': () => ({ results: [], new_findings: [], out_of_scope: [] }),
+    'round-breaker': () => ({ decisions: [], rulings: [], question: asking }) })
+  assert.equal(result.status, 'paused')
+  assert.equal(result.round, 1)
+  assert.deepEqual(result.feedback, round.feedback)
+  assert.ok(!calls.some(c => c.label === 'round-1-write-up'))
 })
