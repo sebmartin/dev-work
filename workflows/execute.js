@@ -442,6 +442,10 @@ ${ASKING} Ask one question covering every finding with needs_user.`,
   mine.forEach(x => listFor(x).push(`${byId[x.id]} (needs the user's decision: ${x.consequence})`))
   const askUser = () => (asks(c) ? c.question : plainQuestion(`These findings would cause real harm if shipped, and fixing them needs your decision:\n${mine.map(x => `- ${byId[x.id]}\n  What goes wrong: ${x.consequence}`).join('\n')}`, 'the harm ships, or the fix goes beyond what the design asked for'))
   if (!fixList.length) return mine.length ? { head, question: askUser() } : { head }
+  // Keep each finding to be fixed in its own list until the re-review closes it, so a failure in between
+  // (a throw, a null return) still hands it to the next run.
+  const pending = c.items.filter(x => x.verdict === 'resolve' && !x.needs_user && byId[x.id] !== undefined).map(x => ({ list: listFor(x), entry: `${byId[x.id]} (judged harmful by the deferral check; fix pending)` }))
+  pending.forEach(p => p.list.push(p.entry))
   const fix = await ag(`Fix these findings before this branch is published. Each was going to be left out; a check found it causes real harm. Re-run the tests that cover what you change, and commit. ${LOCAL} ${NO_SUB}
 
 ## The Design
@@ -463,6 +467,7 @@ Return in report what changed per finding, the covering tests, the command and t
   const rr = await ag(reReviewPrompt({ task: 'Findings that were going to be left out of the pull request, fixed because they cause real harm.', findings: fmt(fixList), reports: fix.report, fixBase: head, head: fix.head_sha, idPrefix: 'D-R-' }),
     { label: 'deferral-re-review', phase: phaseName, schema: REREVIEW, model: 'sonnet', effort: 'medium' })
   if (!rr) return { head: fix.head_sha, failed: 'deferral re-review' }
+  pending.forEach(p => { const i = p.list.indexOf(p.entry); if (i >= 0) p.list.splice(i, 1) })
   const addressed = closed(rr)
   const left = fixList.filter(f => !addressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
   rr.new_findings.filter(f => f.severity === 'Minor').map(f => `${f.id} ${f.text}`).concat(rr.out_of_scope).forEach(x => deferred.push(`${x} (found after the deferral check, not assessed)`))

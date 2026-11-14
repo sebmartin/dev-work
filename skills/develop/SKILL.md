@@ -25,7 +25,7 @@ Each todo developed with dev-work has a folder in its thread, `artifacts/dev-wor
 - `design.md`: the design, ending with its `## Decision log`. Only changes to the design itself go in the log.
 - `implementation-plan.md`: the plan the run built from, copied from the worktree's `.dev-work/implementation-plan.md` when a run ends, however it ends, before the worktree is removed.
 - `implementation-plan-<n>.md`: a plan superseded by a re-plan, `<n>` counting up from 1.
-- `run-result.json`: the last run's returned result, saved verbatim at the end of every invocation that ran the workflow (replacing the previous one, except that a result with an empty `plan` leaves it as it was), so a later session can re-plan from it.
+- `run-result.json`: the last run's returned result, saved verbatim at the end of every invocation that ran the workflow (replacing the previous one, except that a `failed` result with an empty `plan` leaves it as it was; a paused review round's result is always saved), so a later session can re-plan from it.
 - `log.md`: what develop did, which you keep. Make it on the first run:
 
 ```
@@ -136,7 +136,7 @@ The user has reviewed the PR and asked for changes, as review comments on the PR
 **Close**, when the PR is merged: list what's under Not fixed in this PR in `log.md` and ask which to track as todos (nothing is filed automatically), tick the ones filed, set the log's Status to `Merged`, add a close line to its History, and retire the todo. When it was closed without merging: ask once whether to retire the todo or park it, do that, set Status to `Closed`, and add a close line to History. Either way, remove any worktree still left for the todo (below). Keep the branch.
 
 Every other invocation:
-1. **Copy the plan, save the result and update `log.md`:** if this invocation ran the workflow, copy `.dev-work/implementation-plan.md` to the folder as `implementation-plan.md` and save the result the workflow returned, verbatim, as `run-result.json` (replacing the previous one, unless the result's `plan` is empty because the run failed before planning: then keep the earlier file, which still holds the last plan and task outcomes); then the log's Status line, the Run line (none once the run has finished), and a History line for this invocation.
+1. **Copy the plan, save the result and update `log.md`:** if this invocation ran the workflow, copy `.dev-work/implementation-plan.md` to the folder as `implementation-plan.md` and save the result the workflow returned, verbatim, as `run-result.json` (replacing the previous one, unless the result is `failed` with an empty `plan` because the run failed before planning: then keep the earlier file, which still holds the last plan and task outcomes); then the log's Status line, the Run line (none once the run has finished), and a History line for this invocation.
 2. **Leave the worktree** with `ExitWorktree` and `keep`, so the session returns to where it started.
 3. **Remove the worktree** once a PR is open (after publishing or a review round), as in section 2: nothing uncommitted, then `git worktree remove --force <path>` from where the session started, which also removes the run's ignored files in `.dev-work/`. Keep the branch. The worktree exists only while develop is working; left in place, it would stop the user checking the branch out anywhere else. While a run is paused or after a failure, keep it for the resume or re-plan.
 4. **Report** to the user: what happened, the PR link, and anything that needs them.

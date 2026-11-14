@@ -263,6 +263,16 @@ test('the deferral check fixes the other harmful findings, then pauses on the on
   assert.match(result.deferred.join('\n'), /flag missing.*needs the user's decision: items stuck/)
 })
 
+test('a failure in the deferral fix or re-review keeps the finding to be fixed in the result', async () => {
+  const check = () => ({ items: [{ id: 'D-1', consequence: 'logs mislead', verdict: 'resolve', needs_user: false, reason: '' }, { id: 'D-2', consequence: 'none', verdict: 'defer', needs_user: false, reason: 'harmless' }] })
+  for (const fail of [{ 'deferral-fix': () => { throw new Error('usage limit reached') } }, { 'deferral-fix': () => null }, { 'deferral-re-review': () => null }]) {
+    const { result } = await run(start, { ...twoMinor, 'deferral-check': check, ...fail })
+    assert.equal(result.status, 'failed')
+    assert.match(result.deferred.join('\n'), /typo in log.*fix pending/)
+    assert.match(result.deferred.join('\n'), /flag missing.*left out because/)
+  }
+})
+
 test('a finding that needs the user with no question from the check still pauses', async () => {
   const { result } = await run(start, { ...twoMinor, 'deferral-check': () => ({ items: [
     { id: 'D-1', consequence: 'none', verdict: 'defer', needs_user: false, reason: 'harmless' },
