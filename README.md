@@ -16,22 +16,28 @@ sequenceDiagram
     actor You
     participant T as Thread
     participant D as Design
+    participant C as Design checker
     participant O as Orchestrator
     participant W as Workflow agents
     participant G as GitHub
 
     You->>D: /dev-work:design with a todo
     D->>T: Read notes, decisions and research
-    loop Until you say to write it up
+    loop Until nothing is open
         D->>You: One question at a time, then what's still open
         You-->>D: Answers and corrections
     end
+    You->>D: Write it up
+    D->>C: Can a builder plan from this?
+    C-->>D: Questions only you can answer
+    D->>You: Those questions, and the calls it made
+    You-->>D: Answers, then approval
     D->>T: Save the design, link it from the todo
 
     You->>O: /dev-work:develop with the todo
     O->>O: New worktree, enter it
     O->>W: Launch the execute workflow with the design
-    W->>W: Write a plan from the design
+    W->>W: Write a plan from the design, check it for conflicts
     loop Each task in the plan
         W->>W: Implement, review, check
         opt Findings, up to 5 fix rounds
@@ -42,15 +48,28 @@ sequenceDiagram
     W->>W: Deferral check: what goes wrong if what's being left out ships?
     alt Real harm that needs a design change
         W-->>O: Stop
+        O->>T: Log the stop
         O->>You: Put the decision to you
-    else Real harm
-        W->>W: Fix it, then review the fix
+    else Otherwise
+        opt Real harm
+            W->>W: Fix it, then review the fix
+        end
+        W->>W: Write the PR description
+        W-->>O: Result and PR text
+        O->>G: Push the branch, open a pull request
+        O->>T: Log the run, the PR link and what was left unfixed
+        loop Each time you leave review comments
+            You->>G: Review comments
+            You->>O: /dev-work:develop with the todo
+            O->>W: Launch a review round with your comments
+            W->>W: Fix, review the fix, deferral check, write replies
+            W-->>O: Changes and replies
+            O->>You: What changed, push?
+            You-->>O: Yes
+            O->>G: Push, reply to each comment
+        end
+        You->>G: Merge
     end
-    W->>W: Write the PR description
-    W-->>O: Result and PR text
-    O->>G: Push the branch, open a pull request
-    O->>T: Log the run, the PR link and what was left unfixed
-    You->>G: Review and merge
 ```
 
 `/dev-work:design <todo>` is the part you do with Claude, adapted from Superpowers' brainstorming. Claude asks you questions one at a time and ends each round with what's still open. It writes the design (what to build and why, the decisions made, and the acceptance criteria) only when you say to. A separate agent then checks that the design is complete enough to plan from. The design is saved in the thread, in a folder for this piece of work, `artifacts/dev-work/<date>-<todo>/`, linked from the todo. Nothing is written to the code repository.
