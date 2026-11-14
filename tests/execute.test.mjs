@@ -78,6 +78,26 @@ test('the planner writes the plan to .dev-work/implementation-plan.md', async ()
   assert.match(prompt('plan'), /\.dev-work\/implementation-plan\.md/)
 })
 
+test('a failed run returns the plan, each task\'s outcome, the rulings and the findings', async () => {
+  const { result } = await run(start, { 'review-2': () => null })
+  assert.equal(result.status, 'failed')
+  assert.equal(result.stage, 'review 2')
+  assert.equal(result.head, sha('b'))
+  assert.match(result.plan, /TASK TWO/)
+  assert.deepEqual(result.tasks.map(t => [t.task, t.state]), [[1, 'done'], [2, 'in progress']])
+  assert.equal(result.tasks[1].commits, `${sha('a').slice(0, 7)}..${sha('b').slice(0, 7)}`)
+  assert.match(result.rulings.join('\n'), /PREFLIGHT-RULING/)
+  for (const key of ['deferred', 'parked', 'verdicts']) assert.ok(Array.isArray(result[key]), key)
+})
+
+test('an agent that throws ends the run with a failed result that keeps its state', async () => {
+  const { result } = await run(start, { 'implement-2': () => { throw new Error('usage limit reached') } })
+  assert.equal(result.status, 'failed')
+  assert.equal(result.stage, 'implement-2')
+  assert.match(result.error, /usage limit reached/)
+  assert.deepEqual(result.tasks.map(t => t.state), ['done', 'in progress'])
+})
+
 const oneFinding = { 'review-1': () => ({ spec_verdict: 'fail', cannot_verify: [], quality_verdict: 'Needs fixes', findings: [{ id: 'T1-1', severity: 'Important', text: 'broken', consequence: 'users lose drafts' }] }) }
 
 test('task review findings must carry a consequence', async () => {
@@ -174,4 +194,10 @@ test('the re-review asks for a consequence on new findings', async () => {
   const { prompt } = await run(start, oneFinding)
   assert.match(prompt('task-1-re-review-r1'), /write the answer in consequence/)
   assert.match(prompt('task-1-re-review-r1'), /never Minor/)
+})
+
+test('a failed review round returns well-formed state', async () => {
+  const { result } = await run(round, { 'round-1-write-up': () => null })
+  assert.equal(result.status, 'failed')
+  assert.deepEqual(result.tasks, [])
 })

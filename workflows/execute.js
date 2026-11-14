@@ -25,7 +25,8 @@ export const meta = {
 // process and wording, with text in and out
 // instead of brief, report and diff files. Following later Superpowers changes is a deliberate step.
 const A = args
-const ag = (prompt, opts = {}) => agent(prompt, { agentType: 'dev-work:worker', ...opts })
+let lastLabel = ''
+const ag = (prompt, opts = {}) => { lastLabel = opts.label; return agent(prompt, { agentType: 'dev-work:worker', ...opts }) }
 const CAP = 5
 const TIERS = ['haiku', 'sonnet', 'opus']
 const up = m => TIERS[Math.min(TIERS.indexOf(m) + 1, TIERS.length - 1)]
@@ -61,7 +62,20 @@ const same = (a, b) => !!a && !!b && a === b
 
 const rulings = [], parked = [], deferred = [], carry = []
 const rule = (...lines) => rulings.push(...lines)
-const result = (status, extra = {}) => ({ status, ...extra, rulings, parked, deferred, carried: carry })
+
+// The run's state, kept where result() can reach it from any ending, including a review round that never plans.
+let plan = null, planText = ''
+const entries = []            // outcomes of the tasks finished so far
+let current = null            // { n, base } of the task in hand
+let branchHead = A.base
+const verdicts = []
+const outcomes = () => !plan ? [] : plan.tasks.map(t => {
+  const done = entries.find(e => e.task === t.n)
+  if (done) return done
+  if (current && current.n === t.n) return { task: t.n, title: t.title, state: 'in progress', commits: same(current.base, branchHead) ? 'none' : `${current.base.slice(0, 7)}..${branchHead.slice(0, 7)}` }
+  return { task: t.n, title: t.title, state: 'not started' }
+})
+const result = (status, extra = {}) => ({ status, head: branchHead, plan: planText, tasks: outcomes(), verdicts, rulings, parked, deferred, carried: carry, ...extra })
 
 // ---------- Prompts ----------
 const implementerPrompt = ({ n, title, text, context, constraints, applicable, fix }) => `You are implementing Task ${n}: ${title}
@@ -304,7 +318,6 @@ Categorize issues by actual severity: Critical (bugs, security issues, data loss
 summary: your assessment and its reasoning, including what's done well, and your recommendations. declined: the Declined to Judge lines. ready: Yes, No or With fixes. findings: ids F-1, F-2 and so on, each with severity, must_fix where it applies, and the text: file:line, what's wrong, why it matters, how to fix it.`
 
 // The ruler makes the calls Superpowers leaves to its controller.
-let planText = ''
 const ruler = (question, schema, label, phase) => ag(`You make the judgment calls a person would make while a plan is built task by task by implementer and reviewer agents, for the run building the design below. The design is the binding authority, the plan is its argument, and your judgment settles what neither answers. Read the code as needed; don't change it.
 
 ## The Design
@@ -335,7 +348,7 @@ const fixLoop = async ({ open, head, model, label, phase, fixPrompt, task, idPre
     const fixBase = head, fixModel = round <= 3 ? model : up(model)
     const fix = await ag(fixPrompt(round, reports, open), { label: `${label}-fix-r${round}`, phase, schema: IMPL, model: fixModel, effort: effort(fixModel) })
     if (!fix) return { open, head, failed: `${label} fix round ${round}` }
-    head = fix.head_sha
+    head = branchHead = fix.head_sha
     reports.push(`Fix round ${round}:\n${fix.report}`)
     const rr = await ag(reReviewPrompt({ task, findings: fmt(open), reports: reports.join('\n\n'), fixBase, head, idPrefix: `${idPrefix}R${round}-` }),
       { label: `${label}-re-review-r${round}`, phase, schema: REREVIEW, model: 'sonnet', effort: 'medium' })
@@ -415,6 +428,7 @@ ${fmt(fixList)}
 Return in report what changed per finding, the covering tests, the command and the output. head_sha is the full commit id from \`git rev-parse HEAD\` when you finish.`,
     { label: 'deferral-fix', phase: phaseName, schema: IMPL, model: 'sonnet', effort: 'medium' })
   if (!fix) return { head, failed: 'deferral fix' }
+  branchHead = fix.head_sha
   const rr = await ag(reReviewPrompt({ task: 'Findings that were going to be left out of the pull request, fixed because they cause real harm.', findings: fmt(fixList), reports: fix.report, fixBase: head, head: fix.head_sha, idPrefix: 'D-R-' }),
     { label: 'deferral-re-review', phase: phaseName, schema: REREVIEW, model: 'sonnet', effort: 'medium' })
   if (!rr) return { head: fix.head_sha, failed: 'deferral re-review' }
@@ -425,9 +439,13 @@ Return in report what changed per finding, the covering tests, the command and t
   return { head: fix.head_sha, fixed: fix.report }
 }
 
+// The run, wrapped so that an agent call that throws (a usage limit, an expired login) still ends with a
+// failed result carrying the state above. The body keeps its indentation to keep the diff readable.
+const main = async () => {
 // ---------- Review feedback: fix rounds on a review of the PR, then the replies ----------
 if (A.feedback) {
   phase('Review feedback')
+  branchHead = A.head || A.base
   const R = A.round || 1
   let open = A.feedback.map((f, i) => ({ id: f.id || `PR${R}-${i + 1}`, severity: 'Important', text: f.text }))
   const task = `Review round ${R} on the pull request for this branch. The design:\n\n${A.design}\n\nThe pull request's description:\n\n${A.pr || '(none)'}`
@@ -498,7 +516,7 @@ For each item, write a short reply saying what was done, or why it wasn't, stand
 
 // ---------- Plan ----------
 phase('Plan')
-const plan = await ag(`Write the implementation plan for the design below, for an engineer who has not seen this codebase or this design. Assume they write idiomatic code in the project's language once they know the exact interface and the exact test, and that they will make a reasonable choice wherever the plan leaves one open. What they cannot know is what you decided: which files, which names and signatures, which values from the design, which tests prove each task. Document those. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+const planned = await ag(`Write the implementation plan for the design below, for an engineer who has not seen this codebase or this design. Assume they write idiomatic code in the project's language once they know the exact interface and the exact test, and that they will make a reasonable choice wherever the plan leaves one open. What they cannot know is what you decided: which files, which names and signatures, which values from the design, which tests prove each task. Document those. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
 
 Read the code as you need to, and run the repository's existing commands, but don't write or run new code.
 
@@ -573,7 +591,8 @@ Write the full plan, overview and tasks, to .dev-work/implementation-plan.md in 
 - assumptions and follow_ups: one entry each.
 - tasks: in order, each with its number, its title and its full text, exactly as the plan has it.`,
   { label: 'plan', phase: 'Plan', model: 'opus', effort: 'medium', schema: PLAN })
-if (!plan) return result('failed', { stage: 'plan' })
+if (!planned) return result('failed', { stage: 'plan' })
+plan = planned
 planText = `${plan.overview}\n\n${plan.tasks.map(t => `### Task ${t.n}: ${t.title}\n\n${t.text}`).join('\n\n')}`
 
 const pre = await ruler(`Before Task 1 is dispatched, scan the plan above once for conflicts, writing down what you checked as you check it:
@@ -594,9 +613,9 @@ const modelFor = n => (pre.task_models.find(t => t.task === n) || {}).model || '
 // ---------- Tasks ----------
 phase('Tasks')
 let lastHead = A.base
-const tasks = []
 for (const t of plan.tasks) {
-  const n = t.n, base = lastHead, entry = { task: n, title: t.title, rounds: 0, parked: 0 }
+  const n = t.n, base = lastHead, entry = { task: n, title: t.title, state: 'done', rounds: 0, parked: 0 }
+  current = { n, base }
   let model = modelFor(n)
   const context = `Task ${n} of ${plan.tasks.length}. The plan's overview:\n\n${plan.overview}`
   const applicable = () => rulings.slice()
@@ -607,6 +626,7 @@ for (const t of plan.tasks) {
     impl = await ag(implementerPrompt({ n, title: t.title, text: t.text, context, constraints, applicable: applicable(), fix: answer ? `An earlier attempt at this task reported back, and the controller answered:\n${answer}` : '' }),
       { label: `implement-${n}${attempt > 1 ? `-a${attempt}` : ''}`, phase: 'Tasks', schema: IMPL, model, effort: effort(model) })
     if (!impl) return result('failed', { stage: `implement ${n}` })
+    branchHead = impl.head_sha
     if (impl.status === 'DONE' || impl.status === 'DONE_WITH_CONCERNS') break
     if (attempt === 3) return stop(`task ${n}'s implementer still ${impl.status} after 3 dispatches: ${impl.summary}`, `task ${n}`, 'blocked')
     const r = await ruler(`Task ${n}'s implementer (${model}) reported ${impl.status}.\nIts summary: ${impl.summary}\nIts report:\n${impl.report}\nGive the missing context or your correction of the plan as answer, and set escalate if the task needs more reasoning than ${model} has.`,
@@ -683,7 +703,8 @@ ${fmt(items)}`,
   entry.commits = same(head, base) ? 'none, evidence reviewed' : `${base.slice(0, 7)}..${head.slice(0, 7)}`
   entry.tests = impl.summary
   lastHead = head
-  tasks.push(entry)
+  entries.push(entry)
+  current = null
   log(`Task ${n}: ${entry.rounds} fix round(s), ${entry.parked} parked`)
 }
 
@@ -715,7 +736,7 @@ ${fmt(finalOpen)}
 Return in report what changed per finding, the covering tests, the command and the output. head_sha is the full commit id from \`git rev-parse HEAD\` when you finish.`,
     { label: 'final-fix', phase: 'Final review', schema: IMPL, model: 'sonnet', effort: 'medium' })
   if (!fix) return result('failed', { stage: 'final fix' })
-  lastHead = fix.head_sha
+  lastHead = branchHead = fix.head_sha
   finalFix = fix.report
   const rr = await ag(reReviewPrompt({ task: 'The whole branch, reviewed against the design and plan.', findings: fmt(finalOpen), reports: fix.report, fixBase, head: fix.head_sha, idPrefix: 'F-R-' }),
     { label: 'final-re-review', phase: 'Final review', schema: REREVIEW, model: 'sonnet', effort: 'medium' })
@@ -767,7 +788,7 @@ ${plan.follow_ups.map(x => `- ${x}`).join('\n') || '(none)'}
 ## The Run
 
 Tasks:
-${tasks.map(e => `- Task ${e.task}: ${e.title}. Commits ${e.commits}; review ${e.review}; ${e.rounds} fix round(s); ${e.parked} parked. Tests: ${e.tests}`).join('\n')}
+${entries.map(e => `- Task ${e.task}: ${e.title}. Commits ${e.commits}; review ${e.review}; ${e.rounds} fix round(s); ${e.parked} parked. Tests: ${e.tests}`).join('\n')}
 
 Rulings:
 ${rulings.join('\n') || '(none)'}
@@ -790,4 +811,6 @@ Fill in the template. The description must stand on its own: state each decision
   { label: 'write-up', phase: 'Write-up', model: 'sonnet', effort: 'medium', schema: obj({ title: str, body: str }) })
 if (!w) return result('failed', { stage: 'write-up' })
 
-return result('done', { final_head: lastHead, plan: planText, scan: pre.scan, declined: final.declined, assumptions: plan.assumptions, follow_ups: plan.follow_ups, final_review: final.summary, tasks, surfaced, pr_title: w.title, pr_body: w.body })
+return result('done', { final_head: lastHead, scan: pre.scan, declined: final.declined, assumptions: plan.assumptions, follow_ups: plan.follow_ups, final_review: final.summary, surfaced, pr_title: w.title, pr_body: w.body })
+}
+try { return await main() } catch (e) { return result('failed', { stage: lastLabel, error: String((e && e.message) || e) }) }
