@@ -104,6 +104,8 @@ const outcomes = () => !plan ? [] : plan.tasks.map(t => {
 const replanCounts = () => Object.fromEntries(DISPOSITIONS.map(d => [d, plan.tasks.filter(t => disposition(t) === d).length]))
 const result = (status, extra = {}) => ({ status, head: branchHead, plan: planText, tasks: outcomes(), verdicts, rulings, parked, deferred, carried: carry,
   ...(RP && plan ? { replan_counts: replanCounts() } : {}), ...extra })
+// Findings still open when a question ends the run are parked, so the pause holds them.
+const parkOpen = (prefix, open) => open.forEach(f => parked.push(`${prefix} ${f.id}: ${f.text}${wrong(f)} (open when the run paused)`))
 const pause = (question, at, extra = {}) => result('paused', { at, question, ...extra })
 // A pause with no question from an agent: the run says what it could not settle.
 const plainQuestion = (question, ifGuessed) => ({ question, reason: 'expensive to reverse', why: 'the run could not settle this without guessing', if_guessed: ifGuessed, options: [], recommendation: '(none given)' })
@@ -764,7 +766,7 @@ for (const t of plan.tasks) {
       obj({ keep: arr(str), ...RULINGS }, ['keep', 'rulings']), `resolve-${n}`, 'Tasks')
     if (!r) return result('failed', { stage: `resolve ${n}` })
     rule(...r.rulings.map(x => `Task ${n}: ${x}`))
-    if (asks(r)) return pause(r.question, `task ${n}`)
+    if (asks(r)) { parkOpen(`T${n}`, open); return pause(r.question, `task ${n}`) }
     open = open.filter(f => !f.plan_mandated || r.keep.includes(f.id))
   }
 
@@ -794,7 +796,7 @@ ${fmt(items)}`,
     const r = await breaker(`Task ${n}'s fix loop hit its cap of ${CAP} rounds (commits ${base}..${head}).`, open, 'carry', `breaker-${n}`, 'Tasks')
     if (!r) return result('failed', { stage: `breaker ${n}` })
     rule(...r.rulings.map(x => `Task ${n}: ${x}`))
-    if (asks(r)) return pause(r.question, `task ${n}`)
+    if (asks(r)) { parkOpen(`T${n}`, open); return pause(r.question, `task ${n}`) }
     for (const d of r.decisions) {
       const f = open.find(x => x.id === d.id) || { id: d.id, text: '' }
       if (d.decision === 'park') { rule(`Task ${n}: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`T${n} ${f.id}: ${f.text}; ruling: ${d.ruling}`) }
@@ -850,7 +852,7 @@ Return in report what changed per finding, the covering tests, the command and t
     const r = await breaker(`The final whole-branch review's single fix wave left these findings open. There is no second wave.`, finalOpen, 'surface', 'final-breaker', 'Final review')
     if (!r) return result('failed', { stage: 'final breaker' })
     rule(...r.rulings.map(x => `Final: ${x}`))
-    if (asks(r)) return pause(r.question, 'final')
+    if (asks(r)) { parkOpen('final', finalOpen); return pause(r.question, 'final') }
     for (const d of r.decisions) {
       const f = finalOpen.find(x => x.id === d.id) || { id: d.id, text: '' }
       if (d.decision === 'park') { rule(`Final: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`final ${f.id}: ${f.text}; ruling: ${d.ruling}`) }

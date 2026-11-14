@@ -366,3 +366,27 @@ test('a re-plan without a valid head fails before planning', async () => {
     assert.deepEqual(result.tasks, [])
   }
 })
+
+const noEvidenceRe = { 're-review': p => ({ results: [...p.matchAll(/^- ([A-Z0-9][\w-]*) \(/gm)].map(m => ({ id: m[1], addressed: true, evidence: '' })), new_findings: [], out_of_scope: [] }) }
+
+test('a question from the task breaker parks the findings still open', async () => {
+  const { result } = await run(start, { ...oneFinding, ...noEvidenceRe, 'breaker-1': () => ({ decisions: [], rulings: [], question: asking }) })
+  assert.equal(result.status, 'paused')
+  assert.match(result.parked.join('\n'), /T1 T1-1: .*open when the run paused/)
+})
+
+test('a question from the final breaker parks the findings still open', async () => {
+  const { result } = await run(start, { ...noEvidenceRe,
+    'final-review': () => ({ summary: 's', declined: [], ready: 'No', findings: [{ id: 'F-1', severity: 'Important', text: 'broken thing' }] }),
+    'final-breaker': () => ({ decisions: [], rulings: [], question: asking }) })
+  assert.equal(result.status, 'paused')
+  assert.match(result.parked.join('\n'), /final F-1: broken thing.*open when the run paused/)
+})
+
+test('a question from the plan-mandated ruling parks the findings open at that task', async () => {
+  const { result } = await run(start, {
+    'review-1': () => ({ spec_verdict: 'pass', cannot_verify: [], quality_verdict: 'Approved', findings: [{ id: 'T1-1', severity: 'Important', text: 'mandated gap', plan_mandated: true, consequence: 'c' }] }),
+    'resolve-1': () => ({ keep: [], rulings: [], question: asking }) })
+  assert.equal(result.status, 'paused')
+  assert.match(result.parked.join('\n'), /T1 T1-1: mandated gap.*open when the run paused/)
+})
