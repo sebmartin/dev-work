@@ -155,3 +155,23 @@ test('a review round fixes, re-reviews and writes replies without replanning', a
   assert.match(prompt('round-1-fix-r1'), /THE-PR-TEXT/)
   assert.match(prompt('round-1-re-review-r1'), new RegExp(sha('f')))
 })
+
+const FOOTER = /\n---\nWritten by agents with \[dev-work\]\(https:\/\/github\.com\/sebmartin\/dev-work\)\.$/
+
+test('the PR description always ends with the dev-work footer, added by the script', async () => {
+  const { result, prompt } = await run(start)
+  assert.match(result.pr_body, FOOTER)
+  assert.match(prompt('write-up'), /one is added for you/)
+})
+
+test('a review round that rewrites the description gets the footer too, and one that does not returns none', async () => {
+  const rewrites = { 'round-1-write-up': () => ({ replies: [{ id: 'PR1-1', reply: 'Fixed in abc1234: renamed.' }], pr_body: 'NEW-BODY' }) }
+  assert.match((await run(round, rewrites)).result.pr_body, FOOTER)
+  assert.equal((await run(round)).result.pr_body, '')
+})
+
+test('round replies are asked to start with what happened', async () => {
+  const { prompt } = await run(round)
+  assert.match(prompt('round-1-write-up'), /Fixed in <short commit id>/)
+  assert.match(prompt('round-1-write-up'), /Not changed:/)
+})

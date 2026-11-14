@@ -68,7 +68,7 @@ You review the pull request and merge it yourself. The pull request holds the fu
 
 ## Keeping thread content private
 
-Threads can hold private notes, so the agents that write code are not given them. They see only the worktree and what their prompts give them. They run as a dedicated agent type, `dev-work:worker`, which can't use the ai-workspace tools. The workflow's agents get the design's text and nothing else from the thread. Commit messages and pull request text are written by those agents, so someone who has never seen the thread can follow them, and the session reads them before they go out.
+Threads can hold private notes, so the agents that write code are not given them. They see only the worktree and what their prompts give them. They run as a dedicated agent type, `dev-work:worker`, which can't use the ai-workspace tools. The workflow's agents get the design's text and nothing else from the thread. Commit messages and pull request text are written by those agents, so someone who has never seen the thread can follow them, and the orchestrator reads them before they go out.
 
 ## Requirements
 
@@ -91,6 +91,8 @@ Run the design step in a session with the todo's thread resumed. It can start an
 /dev-work:design <todo>
 ```
 
+If you leave out the todo, either command works out which one you mean from the conversation or the resumed thread, and waits for you to confirm before doing anything.
+
 Develop needs a session started in a directory that contains the repository: the folder that holds your repositories, or the repository itself. If the design session started there, run develop in it. Otherwise start a new session there and resume the thread first:
 
 ```
@@ -108,4 +110,6 @@ While a run is building, the plan it's working from is in the worktree at `.dev-
 
 To see where a piece of work stands, open its `log.md`: the status, the pull request, and a dated history with a line for each time develop ran, review rounds included.
 
-If the repository has no pull request template, develop uses its own, `templates/pr-template.md`. To use your own instead, put it at `~/.claude/dev-work/pr-template.md`.
+Pull request descriptions are kept short, about 300 words: what changes and why, the decisions a reviewer might question, what a reviewer would expect but won't find, and how it was tested, leaving out any section with nothing to say. Every description ends with a line saying it was written by agents with dev-work. Replies to review comments are a line or two each and start with what happened: fixed (with the commit), not changed (with the reason), partly, or a question back.
+
+If the repository has no pull request template, develop uses its own, `templates/pr-template.md`. To use your own instead, put it at `~/.claude/dev-work/pr-template.md`. The length and the closing line apply whichever template is used.
