@@ -78,7 +78,21 @@ test('the planner writes the plan to .dev-work/implementation-plan.md', async ()
   assert.match(prompt('plan'), /\.dev-work\/implementation-plan\.md/)
 })
 
-const oneFinding = { 'review-1': () => ({ spec_verdict: 'fail', cannot_verify: [], quality_verdict: 'Needs fixes', findings: [{ id: 'T1-1', severity: 'Important', text: 'broken' }] }) }
+const oneFinding = { 'review-1': () => ({ spec_verdict: 'fail', cannot_verify: [], quality_verdict: 'Needs fixes', findings: [{ id: 'T1-1', severity: 'Important', text: 'broken', consequence: 'users lose drafts' }] }) }
+
+test('task review findings must carry a consequence', async () => {
+  const { calls, prompt } = await run(start)
+  const review = calls.find(c => c.label === 'review-1')
+  assert.ok(review.opts.schema.properties.findings.items.required.includes('consequence'))
+  assert.match(prompt('review-1'), /what actually goes wrong, and for whom/)
+  assert.match(prompt('review-1'), /never Minor/)
+})
+
+test('a fix round sees what goes wrong for each finding', async () => {
+  const { prompt } = await run(start, oneFinding)
+  assert.match(prompt('task-1-fix-r1'), /What goes wrong: users lose drafts/)
+  assert.match(prompt('task-1-fix-r1'), /can't be fixed without changing the design/)
+})
 
 test('a review finding gets a fix round and a re-review', async () => {
   const { calls, result } = await run(start, oneFinding)

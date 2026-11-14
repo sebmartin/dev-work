@@ -37,7 +37,7 @@ const SHA = { type: 'string', pattern: '^[0-9a-f]{40}$', description: 'the full 
 const obj = (props, req = Object.keys(props)) => ({ type: 'object', properties: props, required: req })
 const arr = items => ({ type: 'array', items })
 const SEV = { type: 'string', enum: ['Critical', 'Important', 'Minor'] }
-const FINDING = obj({ id: str, severity: SEV, text: str, plan_mandated: bool }, ['id', 'severity', 'text'])
+const FINDING = obj({ id: str, severity: SEV, text: str, consequence: { type: 'string', description: 'what actually goes wrong, and for whom, if this ships as it is' }, plan_mandated: bool }, ['id', 'severity', 'text', 'consequence'])
 const PLAN = obj({ overview: str, global_constraints: str, review_focus: str, assumptions: arr(str), follow_ups: arr(str), tasks: arr(obj({ n: int, title: str, text: str })) })
 const IMPL = obj({
   status: { type: 'string', enum: ['DONE', 'DONE_WITH_CONCERNS', 'NEEDS_CONTEXT', 'BLOCKED'] },
@@ -55,7 +55,8 @@ const RULINGS = { rulings: arr(str), stop: bool, stop_reason: str }
 const LOCAL = 'Work only in this checkout, your current directory: commit on the current branch, never push or touch a remote. Add every change as a new commit: never amend, rebase, reset or otherwise rewrite commits, and never force-add ignored files (no `git add -f`). Put any scratch files in .dev-work/scratch/ in this checkout, never anywhere else. Write commit messages for a stranger: what changed and why, in their own terms.'
 const NO_SUB = 'Do all of this yourself. Never spawn a subagent to do part of it, and above all never spawn a reviewer to check your work.'
 const INPUTS = (A.inputs || []).length ? `\nInput files the design names are in .dev-work/inputs/:\n${A.inputs.map(i => `- .dev-work/inputs/${i.name}: ${i.description}`).join('\n')}` : ''
-const fmt = fs => fs.map(f => `- ${f.id} (${f.severity}): ${f.text}`).join('\n')
+const wrong = f => f.consequence ? ` What goes wrong: ${f.consequence}` : ''
+const fmt = fs => fs.map(f => `- ${f.id} (${f.severity}): ${f.text}${wrong(f)}`).join('\n')
 const same = (a, b) => !!a && !!b && a === b
 
 const rulings = [], parked = [], deferred = [], carry = []
@@ -203,11 +204,13 @@ Point at evidence: file:line for every finding.
 
 ## Calibration
 
+For every finding, ask what actually goes wrong, and for whom (a person or an agent using the software), if this ships as it is, and write the answer in consequence. A finding where something real goes wrong is Critical or Important and is fixed in this task, never Minor. Minor is only for findings where nothing goes wrong for anyone.
+
 Categorize issues by actual severity. Not everything is Critical. Important means this task cannot be trusted until it is fixed: incorrect or fragile behavior, a missed requirement, or maintainability damage you would block a merge over (verbatim duplication of a logic block, swallowed errors, tests that assert nothing). "Coverage could be broader" and polish suggestions are Minor. If the plan or task explicitly mandates something this rubric calls a defect, that is a finding: report it as Important with plan_mandated set. Acknowledge what was done well before listing issues; accurate praise helps the implementer trust the rest.
 
 ## Output
 
-spec_verdict: pass or fail. cannot_verify: the requirements you couldn't verify from the diff alone, each saying what should be checked. quality_verdict: Approved or Needs fixes. findings: each with an id T${n}-1, T${n}-2 and so on, its severity, and the text: file:line, what's wrong, why it matters, how to fix it if not obvious.`
+spec_verdict: pass or fail. cannot_verify: the requirements you couldn't verify from the diff alone, each saying what should be checked. quality_verdict: Approved or Needs fixes. findings: each with an id T${n}-1, T${n}-2 and so on, its severity, and the text: file:line, what's wrong, why it matters, how to fix it if not obvious. Each finding also has its consequence: what goes wrong, and for whom.`
 
 const reReviewPrompt = ({ task, findings, reports, fixBase, head, idPrefix }) => `You are re-reviewing a fix round. A previous review produced findings; an implementer has attempted to fix them. Your job is to verdict each finding and inspect the fix diff, nothing else.
 
@@ -624,7 +627,7 @@ for (const t of plan.tasks) {
   if (!review) return result('failed', { stage: `review ${n}` })
   entry.review = `${review.spec_verdict}, ${review.quality_verdict}`
   let open = review.findings.filter(f => f.severity !== 'Minor')
-  review.findings.filter(f => f.severity === 'Minor').forEach(f => deferred.push(`T${n} ${f.id}: ${f.text}`))
+  review.findings.filter(f => f.severity === 'Minor').forEach(f => deferred.push(`T${n} ${f.id}: ${f.text}${wrong(f)}`))
 
   // What the reviewer couldn't verify is checked against the code; findings the plan mandates are ruled on
   if (review.cannot_verify.length) {
@@ -654,7 +657,7 @@ for (const t of plan.tasks) {
 Original report:
 ${impl.report}
 ${reports.length ? `\n${reports.join('\n\n')}\n` : ''}
-Fix these findings, re-run the tests that cover the amended code, and commit. Your report is the fix report: what you changed per finding, the covering tests, the command and the output.
+Fix these findings, re-run the tests that cover the amended code, and commit. Your report is the fix report: what you changed per finding, the covering tests, the command and the output. If a finding can't be fixed without changing the design, don't work around it: return BLOCKED and say in your report which design decision it needs.
 ${fmt(items)}`,
     }),
     onDeferred: x => deferred.push(`T${n} ${x}`),
