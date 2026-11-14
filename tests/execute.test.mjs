@@ -23,7 +23,7 @@ const defaults = {
   fix: () => ({ status: 'DONE', head_sha: sha('c'), summary: 'fixed', report: 'FIX-REPORT', red: 'not applicable: fix' }),
   're-review': p => ({ results: [...p.matchAll(/^- ([A-Z0-9][\w-]*) \(/gm)].map(m => ({ id: m[1], addressed: true, evidence: 'x.js:1' })), new_findings: [], out_of_scope: [] }),
   'final-review': () => ({ summary: 'FINAL-SUMMARY', declined: [], ready: 'Yes', findings: [] }),
-  'deferral-check': p => ({ items: [...p.matchAll(/^- (D-\d+) \(/gm)].map(m => ({ id: m[1], consequence: 'nothing goes wrong', verdict: 'defer', needs_design_change: false, reason: 'harmless' })) }),
+  'deferral-check': p => ({ items: [...p.matchAll(/^- (D-\d+) \(/gm)].map(m => ({ id: m[1], consequence: 'nothing goes wrong', verdict: 'defer', needs_user: false, reason: 'harmless' })) }),
   'write-up': () => ({ title: 'PR-TITLE', body: 'PR-BODY' }),
   'round-1-write-up': p => ({ replies: [...p.matchAll(/^- (PR[\w-]+): /gm)].map(m => ({ id: m[1], reply: 'done' })), pr_body: '' }),
 }
@@ -132,7 +132,7 @@ test('a finding marked addressed without evidence stays open', async () => {
 
 test('the deferral check fixes real harm before the write-up', async () => {
   const minor = { 'review-1': () => ({ spec_verdict: 'pass', cannot_verify: [], quality_verdict: 'Approved', findings: [{ id: 'T1-1', severity: 'Minor', text: 'loses data' }] }),
-    'deferral-check': () => ({ items: [{ id: 'D-1', consequence: 'content is lost', verdict: 'resolve', needs_design_change: false, reason: '' }] }) }
+    'deferral-check': () => ({ items: [{ id: 'D-1', consequence: 'content is lost', verdict: 'resolve', needs_user: false, reason: '' }] }) }
   const { calls, result } = await run(start, minor)
   const labels = calls.map(c => c.label)
   assert.ok(labels.indexOf('deferral-fix') > labels.indexOf('deferral-check'))
@@ -157,7 +157,7 @@ test('a deferred finding keeps the reason it was left out', async () => {
 
 test('a design question at the deferral check pauses', async () => {
   const minor = { 'review-1': () => ({ spec_verdict: 'pass', cannot_verify: [], quality_verdict: 'Approved', findings: [{ id: 'T1-1', severity: 'Minor', text: 'x' }] }),
-    'deferral-check': () => ({ items: [{ id: 'D-1', consequence: 'wrong behaviour', verdict: 'resolve', needs_design_change: true, reason: '' }] }) }
+    'deferral-check': () => ({ items: [{ id: 'D-1', consequence: 'wrong behaviour', verdict: 'resolve', needs_user: true, reason: '' }] }) }
   const { result, calls } = await run(start, minor)
   assert.equal(result.status, 'paused')
   assert.equal(result.at, 'deferral check')
@@ -241,4 +241,46 @@ test('a question in a review round pauses it with the round and its feedback', a
   assert.equal(result.round, 1)
   assert.deepEqual(result.feedback, round.feedback)
   assert.ok(!calls.some(c => c.label === 'round-1-write-up'))
+})
+
+const twoMinor = { 'review-1': () => ({ spec_verdict: 'pass', cannot_verify: [], quality_verdict: 'Approved',
+  findings: [{ id: 'T1-1', severity: 'Minor', text: 'typo in log', consequence: 'c' }, { id: 'T1-2', severity: 'Minor', text: 'flag missing', consequence: 'c' }] }) }
+
+test('the deferral check fixes the other harmful findings, then pauses on the one that needs the user', async () => {
+  const { result, calls, prompt } = await run(start, { ...twoMinor, 'deferral-check': () => ({ items: [
+    { id: 'D-1', consequence: 'logs mislead', verdict: 'resolve', needs_user: false, reason: 'cheap' },
+    { id: 'D-2', consequence: 'items stuck', verdict: 'resolve', needs_user: true, reason: 'grows scope' }], question: asking }) })
+  const labels = calls.map(c => c.label)
+  assert.ok(labels.indexOf('deferral-check') < labels.indexOf('deferral-fix') && labels.indexOf('deferral-fix') < labels.indexOf('deferral-re-review'))
+  assert.match(prompt('deferral-fix'), /typo in log/)
+  assert.doesNotMatch(prompt('deferral-fix'), /flag missing/)
+  assert.ok(!labels.includes('write-up'))
+  assert.equal(result.status, 'paused')
+  assert.equal(result.at, 'deferral check')
+  assert.deepEqual(result.question, asking)
+  assert.equal(result.head, sha('c'))
+  assert.deepEqual(result.verdicts.map(v => [v.id, v.verdict, v.needs_user, v.reason]), [['D-1', 'resolve', false, 'cheap'], ['D-2', 'resolve', true, 'grows scope']])
+  assert.match(result.deferred.join('\n'), /flag missing.*needs the user's decision: items stuck/)
+})
+
+test('a finding that needs the user with no question from the check still pauses', async () => {
+  const { result } = await run(start, { ...twoMinor, 'deferral-check': () => ({ items: [
+    { id: 'D-1', consequence: 'none', verdict: 'defer', needs_user: false, reason: 'harmless' },
+    { id: 'D-2', consequence: 'items stuck', verdict: 'resolve', needs_user: true, reason: '' }] }) })
+  assert.equal(result.status, 'paused')
+  assert.match(result.question.question, /flag missing/)
+})
+
+test('a finding still open after the deferral fix pauses the run', async () => {
+  const { result, calls } = await run(start, { ...twoMinor,
+    'deferral-check': () => ({ items: [{ id: 'D-1', consequence: 'logs mislead', verdict: 'resolve', needs_user: false, reason: '' }, { id: 'D-2', consequence: 'none', verdict: 'defer', needs_user: false, reason: 'harmless' }] }),
+    'deferral-re-review': () => ({ results: [{ id: 'D-1', addressed: false, evidence: '' }], new_findings: [], out_of_scope: [] }) })
+  assert.equal(result.status, 'paused')
+  assert.ok(!calls.some(c => c.label === 'write-up'))
+})
+
+test('the deferral check prompt asks when the user must decide', async () => {
+  const { prompt } = await run(start, twoMinor)
+  assert.match(prompt('deferral-check'), /needs_user/)
+  assert.match(prompt('deferral-check'), /scope creep/)
 })

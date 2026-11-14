@@ -381,7 +381,7 @@ ${fmt(open)}`,
 // ---------- The deferral check ----------
 // Everything headed for "not fixed" gets an independent look before anything is published: the reviewer
 // that labelled a finding and the session that wants to finish both have a stake in deferring it.
-const DEFERRAL = obj({ items: arr(obj({ id: str, consequence: str, verdict: { type: 'string', enum: ['resolve', 'defer', 'fixed'] }, needs_design_change: bool, reason: str })) })
+const DEFERRAL = obj({ items: arr(obj({ id: str, consequence: str, verdict: { type: 'string', enum: ['resolve', 'defer', 'fixed'] }, needs_user: bool, reason: str })), question: QUESTION }, ['items'])
 const deferralCheck = async (head, phaseName) => {
   const items = [...deferred.map(x => ({ from: 'deferred', text: x })), ...parked.map(x => ({ from: 'parked', text: x }))].map((x, i) => ({ id: `D-${i + 1}`, ...x }))
   if (!items.length) return { head }
@@ -396,22 +396,27 @@ ${A.design}
 ${items.map(i => `- ${i.id} (${i.from}): ${i.text}`).join('\n')}
 
 For each finding, read the code it points at and work out what actually goes wrong, and for whom, if this branch ships as it is: a person or an agent using the software, not the code's tidiness. Write that in consequence, concretely, or "nothing goes wrong" with why. Then:
-- verdict resolve when something real goes wrong: content lost or silently overwritten, the software not doing what the design says, or an agent steered into doing the wrong thing. Set needs_design_change when fixing it would contradict or go beyond the design.
+- verdict resolve when something real goes wrong: content lost or silently overwritten, the software not doing what the design says, or an agent steered into doing the wrong thing. Set needs_user when fixing it needs the user's decision: the fix would contradict the design, or the conditions below for asking hold.
 - verdict defer when nothing concrete goes wrong, and say why in reason.
 - verdict fixed when the branch has already fixed it (a later fix may have), with the evidence in reason.
-Read only.`,
+Read only.
+
+${ASKING} Ask one question covering every finding with needs_user.`,
     { label: `deferral-check`, phase: phaseName, model: 'opus', effort: 'high', schema: DEFERRAL })
   if (!c) return { head, failed: 'deferral check' }
   const byId = Object.fromEntries(items.map(i => [i.id, i.text])), fromId = Object.fromEntries(items.map(i => [i.id, i.from]))
   const decided = new Set(c.items.map(x => x.id))
   // A finding the check skipped is treated as needing resolution: it fails closed.
-  items.filter(i => !decided.has(i.id)).forEach(i => c.items.push({ id: i.id, consequence: 'not assessed', verdict: 'resolve', needs_design_change: false, reason: 'the check returned no verdict' }))
-  const design = c.items.filter(x => x.verdict === 'resolve' && x.needs_design_change)
-  if (design.length) return { head, question: plainQuestion(`These findings would cause real harm if shipped, and fixing them needs a design decision:\n${design.map(x => `- ${byId[x.id]}\n  What goes wrong: ${x.consequence}`).join('\n')}`, 'the harm ships, or the fix goes beyond the design') }
-  const fixList = c.items.filter(x => x.verdict === 'resolve').map(x => ({ id: x.id, severity: 'Important', text: `${byId[x.id]} What goes wrong if shipped: ${x.consequence}` }))
+  items.filter(i => !decided.has(i.id)).forEach(i => c.items.push({ id: i.id, consequence: 'not assessed', verdict: 'resolve', needs_user: false, reason: 'the check returned no verdict' }))
+  c.items.filter(x => byId[x.id] !== undefined).forEach(x => verdicts.push({ id: x.id, from: fromId[x.id], text: byId[x.id], consequence: x.consequence, verdict: x.verdict, needs_user: !!x.needs_user, reason: x.reason }))
+  const mine = c.items.filter(x => x.verdict === 'resolve' && x.needs_user && byId[x.id] !== undefined)
+  const fixList = c.items.filter(x => x.verdict === 'resolve' && !x.needs_user && byId[x.id] !== undefined).map(x => ({ id: x.id, severity: 'Important', text: `${byId[x.id]} What goes wrong if shipped: ${x.consequence}` }))
+  const listFor = x => (fromId[x.id] === 'parked' ? parked : deferred)
   deferred.length = 0; parked.length = 0
-  c.items.filter(x => x.verdict === 'defer').forEach(x => (fromId[x.id] === 'parked' ? parked : deferred).push(`${byId[x.id]} (left out because: ${x.reason})`))
-  if (!fixList.length) return { head }
+  c.items.filter(x => x.verdict === 'defer' && byId[x.id] !== undefined).forEach(x => listFor(x).push(`${byId[x.id]} (left out because: ${x.reason})`))
+  mine.forEach(x => listFor(x).push(`${byId[x.id]} (needs the user's decision: ${x.consequence})`))
+  const askUser = () => (asks(c) ? c.question : plainQuestion(`These findings would cause real harm if shipped, and fixing them needs your decision:\n${mine.map(x => `- ${byId[x.id]}\n  What goes wrong: ${x.consequence}`).join('\n')}`, 'the harm ships, or the fix goes beyond what the design asked for'))
+  if (!fixList.length) return mine.length ? { head, question: askUser() } : { head }
   const fix = await ag(`Fix these findings before this branch is published. Each was going to be left out; a check found it causes real harm. Re-run the tests that cover what you change, and commit. ${LOCAL} ${NO_SUB}
 
 ## The Design
@@ -435,8 +440,10 @@ Return in report what changed per finding, the covering tests, the command and t
   if (!rr) return { head: fix.head_sha, failed: 'deferral re-review' }
   const addressed = closed(rr)
   const left = fixList.filter(f => !addressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
-  if (left.length) return { head: fix.head_sha, question: plainQuestion(`These findings cause real harm and are still open after a fix:\n${fmt(left)}`, 'the harm ships in the pull request') }
   rr.new_findings.filter(f => f.severity === 'Minor').map(f => `${f.id} ${f.text}`).concat(rr.out_of_scope).forEach(x => deferred.push(`${x} (found after the deferral check, not assessed)`))
+  left.forEach(f => deferred.push(`${f.text} (still open after the deferral fix)`))
+  if (mine.length) return { head: fix.head_sha, question: askUser(), fixed: fix.report }
+  if (left.length) return { head: fix.head_sha, question: plainQuestion(`These findings cause real harm and are still open after a fix:\n${fmt(left)}`, 'the harm ships in the pull request') }
   return { head: fix.head_sha, fixed: fix.report }
 }
 
