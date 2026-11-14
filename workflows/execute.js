@@ -247,7 +247,7 @@ The implementer re-ran the tests covering the amended code and reported the resu
 
 ## Output
 
-results: each finding's id, addressed true or false, and evidence: the file:line that shows it fixed, or the report's evidence that it should not change. A finding with no evidence stays open. new_findings: anything the fix itself broke or introduced, with severity and file:line, ids ${idPrefix}1, ${idPrefix}2 and so on. out_of_scope: issues entirely outside the fix diff.`
+results: each finding's id, addressed true or false, and evidence: the file:line that shows it fixed, or the report's evidence that it should not change. A finding with no evidence stays open. new_findings: anything the fix itself broke or introduced, with severity and file:line, ids ${idPrefix}1, ${idPrefix}2 and so on. For each one, ask what actually goes wrong, and for whom (a person or an agent using the software), if this ships as it is, and write the answer in consequence. A finding where something real goes wrong is Critical or Important, never Minor; Minor is only for findings where nothing goes wrong for anyone. out_of_scope: issues entirely outside the fix diff.`
 
 const branchReviewerPrompt = ({ planText, base, head, triage }) => `You are a Senior Code Reviewer with expertise in software architecture, design patterns, and best practices. Your job is to review completed work against its design and plan and identify issues before it merges.
 

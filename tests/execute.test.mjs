@@ -169,3 +169,9 @@ test('a review round fixes, re-reviews and writes replies without replanning', a
   assert.match(prompt('round-1-fix-r1'), /THE-PR-TEXT/)
   assert.match(prompt('round-1-re-review-r1'), new RegExp(sha('f')))
 })
+
+test('the re-review asks for a consequence on new findings', async () => {
+  const { prompt } = await run(start, oneFinding)
+  assert.match(prompt('task-1-re-review-r1'), /write the answer in consequence/)
+  assert.match(prompt('task-1-re-review-r1'), /never Minor/)
+})
