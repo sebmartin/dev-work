@@ -5,7 +5,7 @@ export const meta = {
   phases: [{ title: 'Plan' }, { title: 'Tasks' }, { title: 'Final review' }, { title: 'Write-up' }, { title: 'Review feedback' }],
 }
 
-// args: { design, inputs, pr_template, base, feedback?, round?, pr?, head? }
+// args: { design, inputs, pr_template, base, feedback?, round?, pr?, head?, replan? }
 //   design       the design's text, verbatim
 //   inputs       [{ name, description }] for files the session staged in .dev-work/inputs/
 //   pr_template  the PR template's text
@@ -13,6 +13,12 @@ export const meta = {
 //   feedback     for a review round: [{ id, text }] from the PR's review and the user
 //   round, pr    the round number and the PR's current description
 //   head         for a review round: the branch's commit id before the round
+//   replan       to re-plan a branch an earlier run built part of: { source, plan, tasks, rulings, deferred,
+//                parked, decision, head }. source is 'paused' or 'failed' when the earlier run's result
+//                exists, 'saved-plan' when only its plan and the branch do (then tasks, rulings, deferred and
+//                parked are empty); decision is the decision-log text added since the pause, or ''; head is
+//                the branch's current commit. Each planned task comes back kept, revised, new or dropped,
+//                and only revised and new tasks are built.
 //
 // Every agent runs in the session's working directory, the worktree, as a dev-work worker: it gets only
 // its prompt, never the threads tools. Everything passes as text in prompts and structured results; no
@@ -40,6 +46,8 @@ const arr = items => ({ type: 'array', items })
 const SEV = { type: 'string', enum: ['Critical', 'Important', 'Minor'] }
 const FINDING = obj({ id: str, severity: SEV, text: str, consequence: { type: 'string', description: 'what actually goes wrong, and for whom, if this ships as it is' }, plan_mandated: bool }, ['id', 'severity', 'text', 'consequence'])
 const PLAN = obj({ overview: str, global_constraints: str, review_focus: str, assumptions: arr(str), follow_ups: arr(str), tasks: arr(obj({ n: int, title: str, text: str })) })
+const DISPOSITIONS = ['kept', 'revised', 'new', 'dropped']
+const REPLAN = { ...PLAN, properties: { ...PLAN.properties, tasks: arr(obj({ n: int, title: str, text: str, disposition: { type: 'string', enum: DISPOSITIONS }, reason: str })) } }
 const IMPL = obj({
   status: { type: 'string', enum: ['DONE', 'DONE_WITH_CONCERNS', 'NEEDS_CONTEXT', 'BLOCKED'] },
   head_sha: SHA,
@@ -66,11 +74,23 @@ const same = (a, b) => !!a && !!b && a === b
 const rulings = [], parked = [], deferred = [], carry = []
 const rule = (...lines) => rulings.push(...lines)
 
+// Re-plan mode: the earlier run's rulings and findings carry over, marked as such, and the branch's
+// current commit is where building resumes.
+const RP = A.replan || null
+if (RP) {
+  rule(...(RP.rulings || []).map(x => `Before the re-plan: ${x}`))
+  deferred.push(...(RP.deferred || []).map(x => `before the re-plan: ${x}`))
+  parked.push(...(RP.parked || []).map(x => `before the re-plan: ${x}`))
+}
+// A task the re-planner left without a disposition is built: it counts as new, never as kept.
+const disposition = t => (RP && DISPOSITIONS.includes(t.disposition) ? t.disposition : 'new')
+const skipped = t => ['kept', 'dropped'].includes(disposition(t))
+
 // The run's state, kept where result() can reach it from any ending, including a review round that never plans.
 let plan = null, planText = ''
 const entries = []            // outcomes of the tasks finished so far
 let current = null            // { n, base } of the task in hand
-let branchHead = A.base
+let branchHead = RP ? RP.head : A.base
 const verdicts = []
 const outcomes = () => !plan ? [] : plan.tasks.map(t => {
   const done = entries.find(e => e.task === t.n)
@@ -78,7 +98,9 @@ const outcomes = () => !plan ? [] : plan.tasks.map(t => {
   if (current && current.n === t.n) return { task: t.n, title: t.title, state: 'in progress', commits: same(current.base, branchHead) ? 'none' : `${current.base.slice(0, 7)}..${branchHead.slice(0, 7)}` }
   return { task: t.n, title: t.title, state: 'not started' }
 })
-const result = (status, extra = {}) => ({ status, head: branchHead, plan: planText, tasks: outcomes(), verdicts, rulings, parked, deferred, carried: carry, ...extra })
+const replanCounts = () => Object.fromEntries(DISPOSITIONS.map(d => [d, plan.tasks.filter(t => disposition(t) === d).length]))
+const result = (status, extra = {}) => ({ status, head: branchHead, plan: planText, tasks: outcomes(), verdicts, rulings, parked, deferred, carried: carry,
+  ...(RP && plan ? { replan_counts: replanCounts() } : {}), ...extra })
 const pause = (question, at, extra = {}) => result('paused', { at, question, ...extra })
 // A pause with no question from an agent: the run says what it could not settle.
 const plainQuestion = (question, ifGuessed) => ({ question, reason: 'expensive to reverse', why: 'the run could not settle this without guessing', if_guessed: ifGuessed, options: [], recommendation: '(none given)' })
@@ -523,6 +545,52 @@ For each item, write a short reply saying what was done, or why it wasn't, stand
 }
 
 // ---------- Plan ----------
+// In re-plan mode the planner also gets what the earlier run built and why the design changed.
+const listed = xs => (xs || []).map(x => `- ${x}`).join('\n') || '(none)'
+const outcomeLine = o => `- Task ${o.task}: ${o.title}: ${o.state}${o.commits ? `, commits ${o.commits}` : ''}${o.review ? `, review ${o.review}` : ''}${o.reason ? `, ${o.reason}` : ''}`
+const replanSection = !RP ? '' : `
+## Re-plan
+
+This design was planned and partly built before, on this branch. ${RP.source === 'failed'
+  ? 'The earlier run failed for an operational reason, not because of the design, and the design is unchanged.'
+  : `The old plan below was built for a design that turned out to be missing something. What changed:\n\n${RP.decision || '(no decision was recorded; compare the old plan with the design above)'}`}
+
+Nothing in the old plan is reused by default: every task, built or not, has to be justified again against the updated design. Plan from the updated design first, then check the old plan for what still holds. Mark every task in your plan with a disposition and its reason:
+- kept: already built and still right. It is not built again.
+- revised: built, but needs changing. It is built again, as a change to what is on the branch.
+- new: not in the old plan, or in it but not built yet. Unbuilt tasks that still hold are reused as written and marked new.
+- dropped: no longer wanted. Its code, if it is on the branch, is removed as part of a revised or new task; say which.
+
+What was built is the branch's commits from ${A.base} up to ${RP.head}: read them with ${diffCommands(A.base, RP.head)}.
+${RP.source === 'saved-plan' ? `
+No result of the earlier run exists, only its plan and the branch, so every task is unverified. Keep a task only after checking the code on the branch against it, and say in its reason what you checked.
+
+### The Old Plan
+
+${RP.plan}
+` : `
+### The Old Plan
+
+${RP.plan}
+
+### Each Task's Outcome
+
+${(RP.tasks || []).map(outcomeLine).join('\n') || '(none)'}
+
+### Rulings Made in the Earlier Run
+
+${listed(RP.rulings)}
+
+### Findings Left Open
+
+Deferred:
+${listed(RP.deferred)}
+
+Parked:
+${listed(RP.parked)}
+`}
+The branch's head: ${RP.head}
+`
 phase('Plan')
 const planned = await ag(`Write the implementation plan for the design below, for an engineer who has not seen this codebase or this design. Assume they write idiomatic code in the project's language once they know the exact interface and the exact test, and that they will make a reasonable choice wherever the plan leaves one open. What they cannot know is what you decided: which files, which names and signatures, which values from the design, which tests prove each task. Document those. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
 
@@ -589,19 +657,21 @@ ${INPUTS}
 ## The Design
 
 ${A.design}
-
+${replanSection}
 ## Return
 
-Write the full plan, overview and tasks, to .dev-work/implementation-plan.md in this checkout, for the user to read while the work runs; nothing reads it back. Then return it, as below.
+Write the full plan, overview and tasks, to .dev-work/implementation-plan.md in this checkout, for the user to read while the work runs; nothing reads it back.${RP ? ' Give each task\'s disposition and reason under its title.' : ''} Then return it, as below.
 
 - overview: everything in the plan before the first task (title, Goal, Architecture, Tech Stack, Global Constraints, Review Focus, file structure).
 - global_constraints and review_focus: those two sections' text.
 - assumptions and follow_ups: one entry each.
-- tasks: in order, each with its number, its title and its full text, exactly as the plan has it.`,
-  { label: 'plan', phase: 'Plan', model: 'opus', effort: 'medium', schema: PLAN })
+- tasks: in order, each with its number, its title and its full text, exactly as the plan has it${RP ? ', its disposition (kept, revised, new or dropped) and its reason' : ''}.`,
+  { label: 'plan', phase: 'Plan', model: 'opus', effort: 'medium', schema: RP ? REPLAN : PLAN })
 if (!planned) return result('failed', { stage: 'plan' })
 plan = planned
-planText = `${plan.overview}\n\n${plan.tasks.map(t => `### Task ${t.n}: ${t.title}\n\n${t.text}`).join('\n\n')}`
+planText = `${plan.overview}\n\n${plan.tasks.map(t => `### Task ${t.n}: ${t.title}${RP ? ` (${disposition(t)}: ${t.reason || 'no reason given'})` : ''}\n\n${t.text}`).join('\n\n')}`
+// Kept and dropped tasks are recorded now, so a run that pauses or fails before reaching them still reports them.
+plan.tasks.filter(skipped).forEach(t => entries.push({ task: t.n, title: t.title, state: disposition(t), reason: t.reason || '' }))
 
 const pre = await ruler(`Before Task 1 is dispatched, scan the plan above once for conflicts, writing down what you checked as you check it:
 - tasks that contradict each other or the plan's Global Constraints
@@ -609,10 +679,16 @@ const pre = await ruler(`Before Task 1 is dispatched, scan the plan above once f
 
 The scan's output is a table, not a verdict: one row for every pair of tasks that share a file or an interface (the two tasks, what one produces against what the other consumes, and what you found), and one row for every task (whether its own text agrees with itself: the tests it specifies against the code it specifies, the files it creates against the files it later touches). "The scan is clean" without those rows is not a scan you ran. Rule on every conflict the scan surfaces, against the plan text that mandates it.
 
-Then choose each task's implementer model, using the least powerful model that can handle it: haiku for mechanical tasks (isolated functions, clear specs, 1-2 files, or the task's text contains the complete code), sonnet for integration and judgment tasks (multi-file coordination, pattern matching, debugging), opus for architecture and design tasks. Return only the rulings you made now.`,
-  obj({ scan: arr(str), task_models: arr(obj({ task: int, model: { type: 'string', enum: TIERS } })), ...RULINGS }, ['scan', 'task_models', 'rulings']),
+Then choose each task's implementer model, using the least powerful model that can handle it: haiku for mechanical tasks (isolated functions, clear specs, 1-2 files, or the task's text contains the complete code), sonnet for integration and judgment tasks (multi-file coordination, pattern matching, debugging), opus for architecture and design tasks. Return only the rulings you made now.${RP ? `
+
+This plan re-plans a branch an earlier run built part of. The rulings from before the re-plan (those starting "Before the re-plan:") hold unless the updated design contradicts them. List each one it contradicts in withdrawn, copied verbatim; it is no longer carried.` : ''}`,
+  obj({ scan: arr(str), task_models: arr(obj({ task: int, model: { type: 'string', enum: TIERS } })), withdrawn: arr(str), ...RULINGS }, ['scan', 'task_models', 'rulings']),
   'pre-flight', 'Plan')
 if (!pre) return result('failed', { stage: 'pre-flight' })
+// Withdrawn rulings are removed in place (result() holds the same array), and only from those carried
+// over, before this pre-flight's own rulings are added.
+const withdrawn = (pre.withdrawn || []).filter(w => typeof w === 'string' && w.trim()).map(w => w.trim())
+for (let i = rulings.length - 1; i >= 0; i--) if (rulings[i].startsWith('Before the re-plan: ') && withdrawn.some(w => rulings[i].includes(w))) rulings.splice(i, 1)
 rule(...pre.rulings.map(x => `Pre-flight: ${x}`))
 if (asks(pre)) return pause(pre.question, 'pre-flight')
 const constraints = plan.global_constraints || '(none)'
@@ -620,12 +696,15 @@ const modelFor = n => (pre.task_models.find(t => t.task === n) || {}).model || '
 
 // ---------- Tasks ----------
 phase('Tasks')
-let lastHead = A.base
+// In re-plan mode building resumes from the branch's current commit; the final review still covers it all.
+let lastHead = RP ? RP.head : A.base
 for (const t of plan.tasks) {
+  if (skipped(t)) continue
   const n = t.n, base = lastHead, entry = { task: n, title: t.title, state: 'done', rounds: 0, parked: 0 }
   current = { n, base }
   let model = modelFor(n)
-  const context = `Task ${n} of ${plan.tasks.length}. The plan's overview:\n\n${plan.overview}`
+  const revising = disposition(t) === 'revised' ? `\n\nThis task was built in an earlier run and is being revised (${t.reason || 'no reason given'}): change what is on the branch rather than building it again.` : ''
+  const context = `Task ${n} of ${plan.tasks.length}. The plan's overview:\n\n${plan.overview}${revising}`
   const applicable = () => rulings.slice()
 
   // 1-2. Dispatch the implementer and handle its status
@@ -800,9 +879,11 @@ Follow-ups:
 ${plan.follow_ups.map(x => `- ${x}`).join('\n') || '(none)'}
 
 ## The Run
-
+${RP && RP.decision ? `\nRe-planned after: ${RP.decision}\n` : ''}
 Tasks:
-${entries.map(e => `- Task ${e.task}: ${e.title}. Commits ${e.commits}; review ${e.review}; ${e.rounds} fix round(s); ${e.parked} parked. Tests: ${e.tests}`).join('\n')}
+${outcomes().map(e => e.state === 'kept' ? `- Task ${e.task}: ${e.title}. Kept from the earlier run: ${e.reason}`
+    : e.state === 'dropped' ? `- Task ${e.task}: ${e.title}. Dropped: ${e.reason}`
+      : `- Task ${e.task}: ${e.title}. Commits ${e.commits}; review ${e.review}; ${e.rounds} fix round(s); ${e.parked} parked. Tests: ${e.tests}`).join('\n')}
 
 Rulings:
 ${rulings.join('\n') || '(none)'}

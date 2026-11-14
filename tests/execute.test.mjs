@@ -284,3 +284,57 @@ test('the deferral check prompt asks when the user must decide', async () => {
   assert.match(prompt('deferral-check'), /needs_user/)
   assert.match(prompt('deferral-check'), /scope creep/)
 })
+
+const replanArgs = { ...start, replan: { source: 'paused', plan: 'OLD-PLAN', tasks: [{ task: 1, title: 'one', state: 'done', commits: 'aaaaaaa..bbbbbbb' }],
+  rulings: ['Ruling: OLD; why: w; cost if wrong: c'], deferred: ['OLD-DEFERRED'], parked: [], decision: 'THE-DECISION', head: sha('d') } }
+const replanned = () => ({ overview: 'OVERVIEW', global_constraints: 'GC', review_focus: 'RF', assumptions: [], follow_ups: [], tasks: [
+  { n: 1, title: 'one', text: 'TASK ONE', disposition: 'kept', reason: 'still right' },
+  { n: 2, title: 'two', text: 'TASK TWO', disposition: 'revised', reason: 'flag changes' },
+  { n: 3, title: 'three', text: 'TASK THREE', disposition: 'new', reason: 'the decision' },
+  { n: 4, title: 'four', text: 'TASK FOUR', disposition: 'dropped', reason: 'no longer wanted' }] })
+
+test('re-plan mode skips kept tasks and builds revised and new ones', async () => {
+  const { result, calls, prompt } = await run(replanArgs, { plan: replanned })
+  const labels = calls.map(c => c.label)
+  assert.ok(labels.includes('implement-2') && labels.includes('implement-3'))
+  assert.ok(!labels.includes('implement-1') && !labels.includes('implement-4'))
+  assert.match(prompt('review-2'), new RegExp(`Base: ${sha('d')}`))
+  assert.match(prompt('final-review'), new RegExp(`Base: ${BASE}`))
+  assert.match(prompt('final-review'), /OLD-DEFERRED/)
+  assert.match(prompt('implement-2'), /being revised/)
+  assert.deepEqual(result.replan_counts, { kept: 1, revised: 1, new: 1, dropped: 1 })
+  assert.deepEqual(result.tasks.map(t => t.state), ['kept', 'done', 'done', 'dropped'])
+  assert.equal(result.status, 'done')
+})
+
+test('the re-planner gets the old plan, the outcomes, the rulings, the decision and the findings', async () => {
+  const { prompt, calls } = await run(replanArgs, { plan: replanned })
+  for (const x of ['OLD-PLAN', 'aaaaaaa..bbbbbbb', 'Ruling: OLD', 'THE-DECISION', 'OLD-DEFERRED', 'turned out to be missing something', 'reused by default']) assert.ok(prompt('plan').includes(x), x)
+  assert.ok(calls.find(c => c.label === 'plan').opts.schema.properties.tasks.items.required.includes('disposition'))
+  assert.match(prompt('implement-2'), /Ruling: OLD/)
+})
+
+test('a ruling the pre-flight withdraws is not carried', async () => {
+  const { prompt } = await run(replanArgs, { plan: replanned,
+    'pre-flight': () => ({ scan: [], task_models: [], rulings: [], withdrawn: ['Ruling: OLD'] }) })
+  assert.doesNotMatch(prompt('implement-2'), /Ruling: OLD/)
+})
+
+test('a re-plan from the saved plan alone treats every task as unverified', async () => {
+  const { prompt } = await run({ ...start, replan: { source: 'saved-plan', plan: 'OLD-PLAN', tasks: [], rulings: [], deferred: [], parked: [], decision: '', head: sha('d') } }, { plan: replanned })
+  assert.match(prompt('plan'), /unverified/)
+})
+
+test('a re-plan that pauses before building still reports its kept and dropped tasks', async () => {
+  const { result } = await run(replanArgs, { plan: replanned, 'pre-flight': () => ({ scan: [], task_models: [], rulings: [], question: asking }) })
+  assert.equal(result.status, 'paused')
+  assert.deepEqual(result.tasks.map(t => t.state), ['kept', 'not started', 'not started', 'dropped'])
+  assert.equal(result.tasks[0].reason, 'still right')
+  assert.deepEqual(result.replan_counts, { kept: 1, revised: 1, new: 1, dropped: 1 })
+})
+
+test('a re-planned task with no disposition is built', async () => {
+  const { calls, result } = await run(replanArgs)
+  assert.ok(calls.some(c => c.label === 'implement-1') && calls.some(c => c.label === 'implement-2'))
+  assert.deepEqual(result.replan_counts, { kept: 0, revised: 0, new: 2, dropped: 0 })
+})
