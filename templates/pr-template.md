@@ -1,6 +1,6 @@
 ## What and why
 
-What changes and the problem it solves, in two to four sentences, for someone who hasn't seen the design.
+One or two sentences on the problem it solves, for someone who hasn't seen the design. Then a sentence leading into what changes, as a short list, one line each.
 
 ## Decisions worth checking
 

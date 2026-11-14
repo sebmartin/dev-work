@@ -794,6 +794,7 @@ Fill in the template, writing for a reviewer's time:
 - Aim for about 300 words. Leave out any section that would be empty; never write "None".
 - Under decisions, only those a reviewer could reasonably disagree with, and any you're unsure about: five at most. The other rulings stay out.
 - Under what's not done, only what a reviewer would expect to find in this change. Leave trivia out.
+- No paragraph longer than about three sentences: where there are several separate things, introduce them with a sentence and list them, one line each.
 - Don't describe the diff, which the reviewer can read, and don't tell the reviewer where to look or what to skip.
 - It must stand on its own: state each decision in its own terms.
 Don't add a footer or a note about how this was made; one is added for you. Return the title and the body.`,
