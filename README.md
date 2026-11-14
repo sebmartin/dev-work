@@ -41,8 +41,10 @@ sequenceDiagram
     W->>W: Review the whole branch
     W->>W: Deferral check: what goes wrong if what's being left out ships?
     alt Real harm that needs a design change
-        W-->>O: Stop
-        O->>You: Put the decision to you
+        W-->>O: Pause with a question
+        O->>You: Put the question to you
+        You-->>O: Your answer
+        O->>W: Re-plan on the same branch
     else Real harm
         W->>W: Fix it, then review the fix
     end
@@ -57,8 +59,8 @@ sequenceDiagram
 
 `/dev-work:develop <todo>` does the rest and asks you nothing after setup. The Claude session you run it in becomes the orchestrator: it does the parts that touch you, the thread and GitHub, and a workflow of separate agents does the building.
 
-1. It creates a git worktree on a new branch, under the repository's `.claude/worktrees/`, and moves the orchestrator into it.
-2. It launches a dynamic workflow called `execute` with the design's text. The workflow plans the design, then builds it the way Superpowers' subagent-driven-development skill describes: for each task, one agent implements it, another reviews it, and a third checks anything the reviewer couldn't verify, with up to five rounds of fixes. Questions that Superpowers would normally leave to a person are decided by a separate agent, and each decision is recorded with its reason. After the last task, the whole branch is reviewed once more. Then a separate agent checks everything that was set aside along the way (findings deferred as minor, filed as out of scope, or parked) and works out what would actually go wrong if the branch shipped without it. Anything that causes real harm is fixed before the pull request, or, if fixing it needs a design decision, the run stops and asks you. Only then does an agent write the pull request description.
+1. It creates a git worktree on a branch of its own for the todo, under the repository's `.claude/worktrees/`, and moves the orchestrator into it.
+2. It launches a dynamic workflow called `execute` with the design's text. The workflow plans the design, then builds it the way Superpowers' subagent-driven-development skill describes: for each task, one agent implements it, another reviews it, and a third checks anything the reviewer couldn't verify, with up to five rounds of fixes. Questions that Superpowers would normally leave to a person are decided by a separate agent. What's cheap to reverse it decides and records with its reason. What's expensive to get wrong, or would grow the work beyond the design, it asks you about, and the run pauses on that question with everything it has built kept. After the last task, the whole branch is reviewed once more. Then a separate agent checks everything that was set aside along the way (findings deferred as minor, filed as out of scope, or parked) and works out what would actually go wrong if the branch shipped without it. Anything that causes real harm is fixed before the pull request, or, if fixing it needs a design decision, the run pauses and asks you. What's left that doesn't matter is recorded as a ruling you can read in the pull request. Only then does an agent write the pull request description.
 3. It reads the commit messages and the description for anything private, pushes the branch and opens the pull request.
 4. It records the run, the pull request link and what it found but didn't fix in a `log.md` next to the design, and removes the worktree. The branch stays, so you can check it out to try the change; a review round recreates the worktree.
 
@@ -97,14 +99,14 @@ Develop needs a session started in a directory that contains the repository: the
 /dev-work:develop <todo>
 ```
 
-You can follow the run with `/workflows`. It ends with a pull request, or with a report explaining why it stopped. Run the same command again later and develop picks up where the todo stands:
+You can follow the run with `/workflows`. It ends with a pull request, with a question for you, or with a report explaining why it failed. Run the same command again later and develop picks up where the todo stands:
 
 - **After you review the pull request** and leave comments or ask for changes, it fixes them on the same branch, has the fixes reviewed, shows you what changed and asks before pushing and replying to your comments. If you have the branch checked out somewhere at the time, it asks you to switch away first. A worktree dev-work left behind, from an older version or an interrupted run, is removed for you as long as it holds no uncommitted changes.
-- **If a run failed or was interrupted,** resume the session that ran it and run the command again: completed steps aren't redone. If that session is gone, develop starts over on a new branch.
-- **If a run stopped** because the design was missing something, fix the design with `/dev-work:design`, then run develop again: it starts over on a new branch. For any other stop, develop explains it and asks whether to start over.
+- **If a run failed or was interrupted,** resume the session that ran it and run the command again: completed steps aren't redone. A failed run that can't be resumed is re-planned on the same branch, not rebuilt on a new one.
+- **If a run paused with a question,** its question is asked in the develop session. You answer there, develop records the answer in the design's decision log and re-plans on the same branch, keeping the tasks that still hold. You can instead rework the design with `/dev-work:design` and run develop again.
 - **After you merge,** it lists what the log says wasn't fixed in the pull request, asks which to keep as todos, and retires the todo. The branch is kept.
 
-While a run is building, the plan it's working from is in the worktree at `.dev-work/implementation-plan.md`; when the run ends it's copied next to the design as `implementation-plan.md`.
+While a run is building, the plan it's working from is in the worktree at `.dev-work/implementation-plan.md`; when the run ends it's copied next to the design as `implementation-plan.md`. A re-plan keeps the superseded plan as `implementation-plan-<n>.md`.
 
 To see where a piece of work stands, open its `log.md`: the status, the pull request, and a dated history with a line for each time develop ran, review rounds included.
 
