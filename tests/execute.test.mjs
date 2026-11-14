@@ -320,6 +320,12 @@ test('a ruling the pre-flight withdraws is not carried', async () => {
   assert.doesNotMatch(prompt('implement-2'), /Ruling: OLD/)
 })
 
+test('a re-plan after a failed re-plan still shows the planner the decision that caused it', async () => {
+  const { prompt } = await run({ ...replanArgs, replan: { ...replanArgs.replan, source: 'failed' } }, { plan: replanned })
+  assert.match(prompt('plan'), /THE-DECISION/)
+  assert.match(prompt('plan'), /operational reason/)
+})
+
 test('a re-plan from the saved plan alone treats every task as unverified', async () => {
   const { prompt } = await run({ ...start, replan: { source: 'saved-plan', plan: 'OLD-PLAN', tasks: [], rulings: [], deferred: [], parked: [], decision: '', head: sha('d') } }, { plan: replanned })
   assert.match(prompt('plan'), /unverified/)

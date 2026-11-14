@@ -556,7 +556,7 @@ const replanSection = !RP ? '' : `
 ## Re-plan
 
 This design was planned and partly built before, on this branch. ${RP.source === 'failed'
-  ? 'The earlier run failed for an operational reason, not because of the design, and the design is unchanged.'
+  ? `The earlier run failed for an operational reason, not because of the design.${RP.decision ? ` The design was changed before it, by this decision:\n\n${RP.decision}` : ' The design is unchanged.'}`
   : `The old plan below was built for a design that turned out to be missing something. What changed:\n\n${RP.decision || '(no decision was recorded; compare the old plan with the design above)'}`}
 
 Nothing in the old plan is reused by default: every task, built or not, has to be justified again against the updated design. Plan from the updated design first, then check the old plan for what still holds. Mark every task in your plan with a disposition and its reason:
