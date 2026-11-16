@@ -1,6 +1,6 @@
 export const meta = {
   name: 'execute',
-  description: 'Plans a design and builds it task by task, reviewing each task and then the whole branch, and writes the pull request description',
+  description: 'dev-work: plan, build and review a design',
   whenToUse: 'Started by the dev-work develop skill.',
   phases: [{ title: 'Plan' }, { title: 'Tasks' }, { title: 'Final review' }, { title: 'Write-up' }, { title: 'Review feedback' }],
 }
