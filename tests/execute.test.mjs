@@ -390,3 +390,100 @@ test('a question from the plan-mandated ruling parks the findings open at that t
   assert.equal(result.status, 'paused')
   assert.match(result.parked.join('\n'), /T1 T1-1: mandated gap.*open when the run paused/)
 })
+
+test('a question from the round breaker parks the findings still open', async () => {
+  const { result } = await run(round, {
+    're-review': () => ({ results: [], new_findings: [], out_of_scope: [] }),
+    'round-breaker': () => ({ decisions: [], rulings: [], question: asking }) })
+  assert.equal(result.status, 'paused')
+  assert.match(result.parked.join('\n'), /round 1 PR1-1: rename x.*open when the run paused/)
+})
+
+test('findings the final breaker surfaced are parked when the deferral check then pauses', async () => {
+  const { result } = await run(start, { ...noEvidenceRe,
+    'final-review': () => ({ summary: 's', declined: ['set aside'], ready: 'No', findings: [{ id: 'F-1', severity: 'Important', text: 'load-bearing thing' }] }),
+    'final-breaker': () => ({ decisions: [{ id: 'F-1', decision: 'surface', ruling: 'a human must look' }], rulings: [] }),
+    'deferral-check': () => ({ items: [{ id: 'D-1', consequence: 'harm', verdict: 'resolve', needs_user: true, reason: '' }], question: asking }) })
+  assert.equal(result.status, 'paused')
+  assert.match(result.parked.join('\n'), /F-1: load-bearing thing.*surfaced for a human; open when the run paused/)
+})
+
+test('findings the round breaker surfaced are parked when the round deferral check then pauses', async () => {
+  const { result } = await run(round, {
+    're-review': () => ({ results: [], new_findings: [], out_of_scope: ['an aside'] }),
+    'round-breaker': () => ({ decisions: [{ id: 'PR1-1', decision: 'surface', ruling: 'a human must look' }], rulings: [] }),
+    'deferral-check': () => ({ items: [{ id: 'D-1', consequence: 'harm', verdict: 'resolve', needs_user: true, reason: '' }], question: asking }) })
+  assert.equal(result.status, 'paused')
+  assert.match(result.parked.join('\n'), /PR1-1: rename x.*surfaced for a human; open when the run paused/)
+})
+
+const importantInTwo = { 'review-2': () => ({ spec_verdict: 'fail', cannot_verify: [], quality_verdict: 'Needs fixes', findings: [{ id: 'T2-1', severity: 'Important', text: 'rejected code', consequence: 'users lose drafts' }] }) }
+
+test('a failed result shows the task in hand with its review and keeps its open findings', async () => {
+  for (const fail of [{ 'task-2-fix-r1': () => { throw new Error('usage limit reached') } }, { 'task-2-fix-r1': () => null }, { 'task-2-re-review-r1': () => null }]) {
+    const { result } = await run(start, { ...importantInTwo, ...fail })
+    assert.equal(result.status, 'failed')
+    assert.equal(result.tasks[1].state, 'in progress')
+    assert.match(result.tasks[1].review, /fail, Needs fixes; 1 finding\(s\) open/)
+    assert.match(result.parked.join('\n'), /T2 T2-1: rejected code.*users lose drafts.*open when the run failed/)
+  }
+})
+
+test('a task that fails before its review is shown as not reviewed', async () => {
+  const { result } = await run(start, { 'review-2': () => null })
+  assert.equal(result.tasks[1].review, 'not reviewed yet')
+})
+
+test('the re-planner is told an in-progress task has not passed review', async () => {
+  const { prompt } = await run(replanArgs, { plan: replanned })
+  assert.match(prompt('plan'), /has not passed review/)
+})
+
+test('the reviewer of a revised task is told it is a revision and to use cannot_verify', async () => {
+  const { prompt } = await run(replanArgs, { plan: replanned })
+  assert.match(prompt('review-2'), /being revised \(flag changes\)/)
+  assert.match(prompt('review-2'), /already on the branch before Base[\s\S]*cannot_verify/)
+  assert.doesNotMatch(prompt('review-3'), /being revised/)
+})
+
+test('a line the final review set aside reaches the deferral check and a resolve verdict on it is fixed', async () => {
+  const { result, calls, prompt } = await run(start, {
+    'final-review': () => ({ summary: 's', declined: ['out-of-scope defect'], ready: 'Yes', findings: [] }),
+    'deferral-check': () => ({ items: [{ id: 'D-1', consequence: 'content is lost', verdict: 'resolve', needs_user: false, reason: '' }] }) })
+  const labels = calls.map(c => c.label)
+  assert.match(prompt('deferral-check'), /D-1 \(declined\): out-of-scope defect/)
+  assert.match(prompt('deferral-fix'), /out-of-scope defect/)
+  assert.ok(labels.indexOf('write-up') > labels.indexOf('deferral-re-review'))
+  assert.equal(result.status, 'done')
+  assert.deepEqual(result.declined, [])
+})
+
+test('a set-aside line the deferral check defers keeps its reason in the write-up', async () => {
+  const { prompt } = await run(start, { 'final-review': () => ({ summary: 's', declined: ['a design choice'], ready: 'Yes', findings: [] }) })
+  assert.match(prompt('write-up'), /a design choice \(left out because: harmless\)/)
+})
+
+test('a set-aside line that needs the user is kept in the paused result', async () => {
+  const { result } = await run(start, {
+    'final-review': () => ({ summary: 's', declined: ['out-of-scope defect'], ready: 'Yes', findings: [] }),
+    'deferral-check': () => ({ items: [{ id: 'D-1', consequence: 'harm', verdict: 'resolve', needs_user: true, reason: '' }], question: asking }) })
+  assert.equal(result.status, 'paused')
+  assert.match(result.declined.join('\n'), /out-of-scope defect.*needs the user's decision/)
+})
+
+test('the final review runs on Opus at xhigh and both it and the deferral check must trace what a change removes', async () => {
+  const { calls, prompt } = await run(start, { 'review-1': () => ({ spec_verdict: 'pass', cannot_verify: [], quality_verdict: 'Approved', findings: [{ id: 'T1-1', severity: 'Minor', text: 'x', consequence: 'c' }] }) })
+  const fr = calls.find(c => c.label === 'final-review')
+  assert.equal(fr.opts.model, 'opus')
+  assert.equal(fr.opts.effort, 'xhigh')
+  const trace = /Before you rate a finding Minor or call it harmless, and for anything the change removes, moves or recreates \(a file, a directory, a worktree, saved state\), trace what later reads or relies on it, in this change and in the code around it\. Ask what breaks because it is gone, not only whether anything is lost\./
+  assert.match(prompt('final-review'), trace)
+  assert.match(prompt('deferral-check'), trace)
+  for (const l of ['review-1', 'implement-1']) assert.doesNotMatch(prompt(l), trace)
+  assert.notEqual(calls.find(c => c.label === 'review-1').opts.effort, 'xhigh')
+})
+
+test('an implementer is told to leave the tree clean when it escalates', async () => {
+  const { prompt } = await run(start)
+  assert.match(prompt('implement-1'), /leave the working tree clean/)
+})
