@@ -507,3 +507,46 @@ test('round replies are asked to start with what happened', async () => {
   assert.match(prompt('round-1-write-up'), /Fixed in <short commit id>/)
   assert.match(prompt('round-1-write-up'), /Not changed:/)
 })
+
+const keptPlan = tasks => () => ({ overview: 'OVERVIEW', global_constraints: 'GC', review_focus: 'RF', assumptions: [], follow_ups: [], tasks })
+
+test('a task marked kept that the earlier run did not finish is built', async () => {
+  const { result, calls, prompt } = await run(replanArgs, { plan: keptPlan([
+    { n: 1, title: 'one', text: 'TASK ONE', disposition: 'kept', reason: 'still right' },
+    { n: 2, title: 'two', text: 'TASK TWO', disposition: 'kept', reason: 'looks fine' }]) })
+  const labels = calls.map(c => c.label)
+  assert.ok(!labels.includes('implement-1'))
+  assert.ok(labels.includes('implement-2'))
+  assert.deepEqual(result.replan_counts, { kept: 1, revised: 0, new: 1, dropped: 0 })
+  assert.match(prompt('final-review'), /does not record this task as done/)
+  const inProgress = { ...replanArgs, replan: { ...replanArgs.replan, tasks: [{ task: 1, title: 'one', state: 'in progress' }] } }
+  const r2 = await run(inProgress, { plan: keptPlan([{ n: 1, title: 'one', text: 'T', disposition: 'kept', reason: 'r' }]) })
+  assert.ok(r2.calls.some(c => c.label === 'implement-1'))
+})
+
+test('a re-plan from the saved plan alone still accepts kept from the planner', async () => {
+  const { calls } = await run({ ...start, replan: { source: 'saved-plan', plan: 'OLD-PLAN', tasks: [], rulings: [], deferred: [], parked: [], decision: '', head: sha('d') } }, { plan: replanned })
+  assert.ok(!calls.some(c => c.label === 'implement-1'))
+})
+
+test('findings the earlier run surfaced for a human carry into the re-plan', async () => {
+  const { result } = await run({ ...replanArgs, replan: { ...replanArgs.replan, surfaced: ['F-2: needs a human'] } }, { plan: replanned })
+  assert.match(result.surfaced.join('\n'), /before the re-plan: F-2: needs a human/)
+})
+
+test('a failure during the final fix keeps the findings it was fixing', async () => {
+  const finalFindings = { 'final-review': () => ({ summary: 's', declined: [], ready: 'No', findings: [{ id: 'F-1', severity: 'Important', text: 'broken thing' }] }) }
+  for (const fail of [{ 'final-fix': () => { throw new Error('usage limit reached') } }, { 'final-fix': () => null }, { 'final-re-review': () => null }]) {
+    const { result } = await run(start, { ...finalFindings, ...fail })
+    assert.equal(result.status, 'failed')
+    assert.match(result.parked.join('\n'), /final F-1: broken thing.*open when the run failed/)
+  }
+})
+
+test("a failure during a review round's fix loop keeps the feedback it was fixing", async () => {
+  for (const fail of [{ 'round-1-fix-r1': () => { throw new Error('usage limit reached') } }, { 'round-1-fix-r1': () => null }, { 'round-1-re-review-r1': () => null }]) {
+    const { result } = await run(round, fail)
+    assert.equal(result.status, 'failed')
+    assert.match(result.parked.join('\n'), /round 1 PR1-1: rename x.*open when the run failed/)
+  }
+})

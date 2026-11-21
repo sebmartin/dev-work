@@ -14,9 +14,9 @@ export const meta = {
 //   round, pr    the round number and the PR's current description
 //   head         for a review round: the branch's commit id before the round
 //   replan       to re-plan a branch an earlier run built part of: { source, plan, tasks, rulings, deferred,
-//                parked, declined, decision, head }. source is 'paused' or 'failed' when the earlier run's result
-//                exists, 'saved-plan' when only its plan and the branch do (then tasks, rulings, deferred, parked and
-//                declined are empty); decision is the decision-log text added since the pause, or ''; head is
+//                parked, declined, surfaced, decision, head }. source is 'paused' or 'failed' when the earlier run's result
+//                exists, 'saved-plan' when only its plan and the branch do (then tasks, rulings, deferred, parked,
+//                declined and surfaced are empty); decision is the decision-log text added since the pause, or ''; head is
 //                the branch's current commit. Each planned task comes back kept, revised, new or dropped,
 //                and only revised and new tasks are built.
 //
@@ -87,15 +87,23 @@ if (RP) {
   deferred.push(...(RP.deferred || []).map(x => `before the re-plan: ${x}`))
   parked.push(...(RP.parked || []).map(x => `before the re-plan: ${x}`))
   declined.push(...(RP.declined || []).map(x => `before the re-plan: ${x}`))
+  surfaced.push(...(RP.surfaced || []).map(x => `before the re-plan: ${x}`))
 }
 // A task the re-planner left without a disposition is built: it counts as new, never as kept.
-const disposition = t => (RP && DISPOSITIONS.includes(t.disposition) ? t.disposition : 'new')
+// A task counts as kept only if the earlier run's outcomes show it built and reviewed (done, or kept by an
+// earlier re-plan): anything else the planner marks kept is built. With only the saved plan there are no
+// outcomes, so the planner's check of the code is all there is.
+const builtBefore = n => RP.source === 'saved-plan' || (RP.tasks || []).some(o => o.task === n && ['done', 'kept'].includes(o.state))
+const demoted = t => !!RP && t.disposition === 'kept' && !builtBefore(t.n)
+const disposition = t => (RP && DISPOSITIONS.includes(t.disposition) && !demoted(t) ? t.disposition : 'new')
+const why = t => `${t.reason || 'no reason given'}${demoted(t) ? '; marked kept, but the earlier run does not record this task as done, so it is built' : ''}`
 const skipped = t => ['kept', 'dropped'].includes(disposition(t))
 
 // The run's state, kept where result() can reach it from any ending, including a review round that never plans.
 let plan = null, planText = ''
 const entries = []            // outcomes of the tasks finished so far
 let current = null            // { n, base } of the task in hand
+let openNow = null            // { prefix, items }: the findings open in whichever phase is running
 let branchHead = replanHeadOk ? RP.head : A.base
 const verdicts = []
 const outcomes = () => !plan ? [] : plan.tasks.map(t => {
@@ -109,11 +117,14 @@ const replanCounts = () => Object.fromEntries(DISPOSITIONS.map(d => [d, plan.tas
 const result = (status, extra = {}) => {
   // The task in hand has not passed review: the findings still open on it go into the failed result.
   const tasks = outcomes()
-  if (status === 'failed' && current && current.open && current.open.length) { parkOpen(`T${current.n}`, current.open, 'failed'); current.open = [] }
+  // Whatever is open in the running phase (task, final review or review round) is parked on any failure or pause.
+  if (openNow && (status === 'failed' || status === 'paused')) parkOpen(openNow.prefix, openNow.items, status)
+  openNow = null
   return { status, head: branchHead, plan: planText, tasks, verdicts, rulings, parked, deferred, declined, surfaced, carried: carry,
     ...(RP && plan ? { replan_counts: replanCounts() } : {}), ...extra }
 }
 // Findings still open when a question ends the run are parked, so the pause holds them.
+const setOpen = (prefix, items) => { openNow = items && items.length ? { prefix, items } : null }
 const parkOpen = (prefix, open, how = 'paused') => open.forEach(f => parked.push(`${prefix} ${f.id}: ${f.text}${wrong(f)} (open when the run ${how})`))
 // What the breakers surfaced for a human is parked too when a later question pauses the run.
 const parkSurfaced = () => surfaced.splice(0).forEach(x => parked.push(`${x} (surfaced for a human; open when the run paused)`))
@@ -403,7 +414,7 @@ const fixLoop = async ({ open, head, model, label, phase, fixPrompt, task, idPre
     track(open)
     onRound(round, before - (open.length - rr.new_findings.filter(f => f.severity !== 'Minor').length), open.length, fixBase, head)
     // A fix agent that couldn't proceed ends the loop; the breaker rules on what's left.
-    if (fix.status === 'BLOCKED' || fix.status === 'NEEDS_CONTEXT') { open = open.map(f => ({ ...f, text: `${f.text} (the fix agent reported ${fix.status}: ${fix.summary})` })); break }
+    if (fix.status === 'BLOCKED' || fix.status === 'NEEDS_CONTEXT') { open = open.map(f => ({ ...f, text: `${f.text} (the fix agent reported ${fix.status}: ${fix.summary})` })); track(open); break }
   }
   return { open, head }
 }
@@ -529,14 +540,16 @@ Address each item, re-run the tests that cover what you change, and commit. If a
 Return in report, per item: what changed, or why nothing should change, with evidence; the covering tests, the command and the output. head_sha is the full commit id from \`git rev-parse HEAD\` when you finish, whether or not you committed.`,
     onDeferred: t => deferred.push(`round ${R} ${t}`),
     onRound: () => {},
+    track: o => setOpen(`round ${R}`, o),
   })
-  if (loop.failed) { parkOpen(`round ${R}`, loop.open, 'failed'); return result('failed', { stage: loop.failed }) }
+  if (loop.failed) return result('failed', { stage: loop.failed })
   A.feedback.forEach((f, i) => { const id = f.id || `PR${R}-${i + 1}`; if (!loop.open.find(o => o.id === id)) outcome[id] = 'addressed' })
   if (loop.open.length) {
     const r = await breaker(`Review round ${R} on the pull request hit its cap of ${CAP} fix rounds.`, loop.open, 'surface', 'round-breaker', 'Review feedback')
     if (!r) return result('failed', { stage: 'round breaker' })
     rule(...r.rulings.map(x => `Round ${R}: ${x}`))
-    if (asks(r)) { parkOpen(`round ${R}`, loop.open); return pause(r.question, `round ${R}`, { round: R, feedback: A.feedback }) }
+    if (asks(r)) return pause(r.question, `round ${R}`, { round: R, feedback: A.feedback })
+    setOpen()
     for (const d of r.decisions) {
       const f = loop.open.find(x => x.id === d.id) || { id: d.id, text: '' }
       outcome[d.id] = `${d.decision}: ${d.ruling}`
@@ -587,7 +600,7 @@ This design was planned and partly built before, on this branch. ${RP.source ===
   : `The old plan below was built for a design that turned out to be missing something. What changed:\n\n${RP.decision || '(no decision was recorded; compare the old plan with the design above)'}`}
 
 Nothing in the old plan is reused by default: every task, built or not, has to be justified again against the updated design. Plan from the updated design first, then check the old plan for what still holds. Mark every task in your plan with a disposition and its reason:
-- kept: already built and still right. It is not built again.
+- kept: already built and still right. It is not built again. Keep the old plan's task number for it: only a task the earlier run's outcomes show as done (or kept) is accepted as kept, and any other is built.
 - revised: built, but needs changing. It is built again, as a change to what is on the branch.
 - new: not in the old plan, or in it but not built yet. Unbuilt tasks that still hold are reused as written and marked new.
 - dropped: no longer wanted. Its code, if it is on the branch, is removed as part of a revised or new task; say which.
@@ -705,7 +718,7 @@ Write the full plan, overview and tasks, to .dev-work/implementation-plan.md in 
   { label: 'plan', phase: 'Plan', model: 'opus', effort: 'medium', schema: RP ? REPLAN : PLAN })
 if (!planned) return result('failed', { stage: 'plan' })
 plan = planned
-planText = `${plan.overview}\n\n${plan.tasks.map(t => `### Task ${t.n}: ${t.title}${RP ? ` (${disposition(t)}: ${t.reason || 'no reason given'})` : ''}\n\n${t.text}`).join('\n\n')}`
+planText = `${plan.overview}\n\n${plan.tasks.map(t => `### Task ${t.n}: ${t.title}${RP ? ` (${disposition(t)}: ${why(t)})` : ''}\n\n${t.text}`).join('\n\n')}`
 // Kept and dropped tasks are recorded now, so a run that pauses or fails before reaching them still reports them.
 plan.tasks.filter(skipped).forEach(t => entries.push({ task: t.n, title: t.title, state: disposition(t), reason: t.reason || '' }))
 
@@ -776,7 +789,7 @@ for (const t of plan.tasks) {
   if (!review) return result('failed', { stage: `review ${n}` })
   entry.review = `${review.spec_verdict}, ${review.quality_verdict}`
   let open = review.findings.filter(f => f.severity !== 'Minor')
-  current.review = entry.review; current.open = open
+  current.review = entry.review; current.open = open; setOpen(`T${n}`, open)
   review.findings.filter(f => f.severity === 'Minor').forEach(f => deferred.push(`T${n} ${f.id}: ${f.text}${wrong(f)}`))
 
   // What the reviewer couldn't verify is checked against the code; findings the plan mandates are ruled on
@@ -785,7 +798,7 @@ for (const t of plan.tasks) {
       { label: `verify-${n}`, phase: 'Tasks', model: 'sonnet', effort: 'medium', schema: obj({ gaps: arr(str) }) })
     if (!c) return result('failed', { stage: `verify ${n}` })
     open = open.concat(c.gaps.map((g, i) => ({ id: `T${n}-G${i + 1}`, severity: 'Important', text: g })))
-    current.open = open
+    current.open = open; setOpen(`T${n}`, open)
   }
   const mandated = open.filter(f => f.plan_mandated)
   if (mandated.length) {
@@ -793,9 +806,9 @@ for (const t of plan.tasks) {
       obj({ keep: arr(str), ...RULINGS }, ['keep', 'rulings']), `resolve-${n}`, 'Tasks')
     if (!r) return result('failed', { stage: `resolve ${n}` })
     rule(...r.rulings.map(x => `Task ${n}: ${x}`))
-    if (asks(r)) { parkOpen(`T${n}`, open); return pause(r.question, `task ${n}`) }
+    if (asks(r)) return pause(r.question, `task ${n}`)
     open = open.filter(f => !f.plan_mandated || r.keep.includes(f.id))
-    current.open = open
+    current.open = open; setOpen(`T${n}`, open)
   }
 
   // 4. The fix loop
@@ -814,7 +827,7 @@ ${fmt(items)}`,
     }),
     onDeferred: x => deferred.push(`T${n} ${x}`),
     onRound: round => { entry.rounds = round },
-    track: o => { current.open = o },
+    track: o => { current.open = o; setOpen(`T${n}`, o) },
   })
   if (loop.failed) return result('failed', { stage: loop.failed })
   head = loop.head || head
@@ -825,7 +838,8 @@ ${fmt(items)}`,
     const r = await breaker(`Task ${n}'s fix loop hit its cap of ${CAP} rounds (commits ${base}..${head}).`, open, 'carry', `breaker-${n}`, 'Tasks')
     if (!r) return result('failed', { stage: `breaker ${n}` })
     rule(...r.rulings.map(x => `Task ${n}: ${x}`))
-    if (asks(r)) { parkOpen(`T${n}`, open); return pause(r.question, `task ${n}`) }
+    if (asks(r)) return pause(r.question, `task ${n}`)
+    setOpen()
     for (const d of r.decisions) {
       const f = open.find(x => x.id === d.id) || { id: d.id, text: '' }
       if (d.decision === 'park') { rule(`Task ${n}: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`T${n} ${f.id}: ${f.text}; ruling: ${d.ruling}`) }
@@ -837,7 +851,7 @@ ${fmt(items)}`,
   entry.tests = impl.summary
   lastHead = head
   entries.push(entry)
-  current = null
+  current = null; setOpen()
   log(`Task ${n}: ${entry.rounds} fix round(s), ${entry.parked} parked`)
 }
 
@@ -849,6 +863,7 @@ if (!final) return result('failed', { stage: 'final review' })
 declined.push(...(final.declined || []))
 let finalOpen = final.findings.filter(f => f.severity !== 'Minor' || f.must_fix)
 final.findings.filter(f => f.severity === 'Minor' && !f.must_fix).forEach(f => deferred.push(`final ${f.id}: ${f.text}`))
+setOpen('final', finalOpen)
 let finalFix = ''
 if (finalOpen.length) {
   const fixBase = lastHead
@@ -877,11 +892,13 @@ Return in report what changed per finding, the covering tests, the command and t
   const addressed = closed(rr)
   rr.new_findings.filter(f => f.severity === 'Minor').map(f => `${f.id} ${f.text}`).concat(rr.out_of_scope).forEach(x => deferred.push(`final ${x}`))
   finalOpen = finalOpen.filter(f => !addressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
+  setOpen('final', finalOpen)
   if (finalOpen.length) {
     const r = await breaker(`The final whole-branch review's single fix wave left these findings open. There is no second wave.`, finalOpen, 'surface', 'final-breaker', 'Final review')
     if (!r) return result('failed', { stage: 'final breaker' })
     rule(...r.rulings.map(x => `Final: ${x}`))
-    if (asks(r)) { parkOpen('final', finalOpen); return pause(r.question, 'final') }
+    if (asks(r)) return pause(r.question, 'final')
+    setOpen()
     for (const d of r.decisions) {
       const f = finalOpen.find(x => x.id === d.id) || { id: d.id, text: '' }
       if (d.decision === 'park') { rule(`Final: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`final ${f.id}: ${f.text}; ruling: ${d.ruling}`) }
