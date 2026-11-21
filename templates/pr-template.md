@@ -12,5 +12,7 @@ One or two sentences on the problem it solves, for someone who hasn't seen the d
 
 ## Testing
 
-- A command that was run, and its result.
-- Anything that wasn't tested, and why.
+- The command that was run and its result, in one line, such as "`<command>`: 54 pass, 0 fail".
+- Anything that isn't covered by a test, and how it was checked instead.
+
+Don't list the tests that were added; the diff shows them.
