@@ -1,23 +1,16 @@
-## Summary
+## What and why
 
-What this change does and why, in a few sentences.
+One or two sentences on the problem it solves, for someone who hasn't seen the design. Then a sentence leading into what changes, as a short list, one line each.
 
-## Changes
+## Decisions worth checking
 
-The main changes, grouped by area.
-
-## Decisions and trade-offs
-
-Each decision made while building this: what was decided, why, and what it costs if it turns out wrong. Include the assumptions the work rests on.
+- A decision a reviewer could disagree with, or one the author isn't sure about: what was decided and why, and what it costs if wrong when that's real. Five at most.
 
 ## Not done
 
-What this change deliberately leaves out, and anything found during the work that was set aside, with the reason.
+- Something a reviewer would expect to find in this change but won't, and why it was left out.
 
 ## Testing
 
-How the change was tested: the commands run, their results, and any measurements.
-
-## Review
-
-What the automated review found and how each finding was resolved, and anything that needs a human reviewer's attention.
+- A command that was run, and its result.
+- Anything that wasn't tested, and why.

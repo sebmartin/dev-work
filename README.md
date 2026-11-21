@@ -16,22 +16,28 @@ sequenceDiagram
     actor You
     participant T as Thread
     participant D as Design
+    participant C as Design checker
     participant O as Orchestrator
     participant W as Workflow agents
     participant G as GitHub
 
     You->>D: /dev-work:design with a todo
     D->>T: Read notes, decisions and research
-    loop Until you say to write it up
+    loop Until nothing is open
         D->>You: One question at a time, then what's still open
         You-->>D: Answers and corrections
     end
+    You->>D: Write it up
+    D->>C: Can a builder plan from this?
+    C-->>D: Questions only you can answer
+    D->>You: Those questions, and the calls it made
+    You-->>D: Answers, then approval
     D->>T: Save the design, link it from the todo
 
     You->>O: /dev-work:develop with the todo
     O->>O: New worktree, enter it
     O->>W: Launch the execute workflow with the design
-    W->>W: Write a plan from the design
+    W->>W: Write a plan from the design, check it for conflicts
     loop Each task in the plan
         W->>W: Implement, review, check
         opt Findings, up to 5 fix rounds
@@ -42,17 +48,30 @@ sequenceDiagram
     W->>W: Deferral check: what goes wrong if what's being left out ships?
     alt Real harm that needs a design change
         W-->>O: Pause with a question
+        O->>T: Log the pause
         O->>You: Put the question to you
         You-->>O: Your answer
         O->>W: Re-plan on the same branch
-    else Real harm
-        W->>W: Fix it, then review the fix
+    else Otherwise
+        opt Real harm
+            W->>W: Fix it, then review the fix
+        end
+        W->>W: Write the PR description
+        W-->>O: Result and PR text
+        O->>G: Push the branch, open a pull request
+        O->>T: Log the run, the PR link and what was left unfixed
+        loop Each time you leave review comments
+            You->>G: Review comments
+            You->>O: /dev-work:develop with the todo
+            O->>W: Launch a review round with your comments
+            W->>W: Fix, review the fix, deferral check, write replies
+            W-->>O: Changes and replies
+            O->>You: What changed, push?
+            You-->>O: Yes
+            O->>G: Push, reply to each comment
+        end
+        You->>G: Merge
     end
-    W->>W: Write the PR description
-    W-->>O: Result and PR text
-    O->>G: Push the branch, open a pull request
-    O->>T: Log the run, the PR link and what was left unfixed
-    You->>G: Review and merge
 ```
 
 `/dev-work:design <todo>` is the part you do with Claude, adapted from Superpowers' brainstorming. Claude asks you questions one at a time and ends each round with what's still open. It writes the design (what to build and why, the decisions made, and the acceptance criteria) only when you say to. A separate agent then checks that the design is complete enough to plan from. The design is saved in the thread, in a folder for this piece of work, `artifacts/dev-work/<date>-<todo>/`, linked from the todo. Nothing is written to the code repository.
@@ -70,7 +89,7 @@ You review the pull request and merge it yourself. The pull request holds the fu
 
 ## Keeping thread content private
 
-Threads can hold private notes, so the agents that write code are not given them. They see only the worktree and what their prompts give them. They run as a dedicated agent type, `dev-work:worker`, which can't use the ai-workspace tools. The workflow's agents get the design's text and nothing else from the thread. Commit messages and pull request text are written by those agents, so someone who has never seen the thread can follow them, and the session reads them before they go out.
+Threads can hold private notes, so the agents that write code are not given them. They see only the worktree and what their prompts give them. They run as a dedicated agent type, `dev-work:worker`, which can't use the ai-workspace tools. The workflow's agents get the design's text and nothing else from the thread. Commit messages and pull request text are written by those agents, so someone who has never seen the thread can follow them, and the orchestrator reads them before they go out.
 
 ## Requirements
 
@@ -93,6 +112,8 @@ Run the design step in a session with the todo's thread resumed. It can start an
 /dev-work:design <todo>
 ```
 
+If you leave out the todo, either command works out which one you mean from the conversation or the resumed thread, and waits for you to confirm before doing anything.
+
 Develop needs a session started in a directory that contains the repository: the folder that holds your repositories, or the repository itself. If the design session started there, run develop in it. Otherwise start a new session there and resume the thread first:
 
 ```
@@ -110,4 +131,6 @@ While a run is building, the plan it's working from is in the worktree at `.dev-
 
 To see where a piece of work stands, open its `log.md`: the status, the pull request, and a dated history with a line for each time develop ran, review rounds included.
 
-If the repository has no pull request template, develop uses its own, `templates/pr-template.md`. To use your own instead, put it at `~/.claude/dev-work/pr-template.md`.
+Pull request descriptions are kept short, about 300 words: what changes and why, the decisions a reviewer might question, what a reviewer would expect but won't find, and how it was tested, leaving out any section with nothing to say. Every description ends with a line saying it was written by agents with dev-work. Replies to review comments are a line or two each and start with what happened: fixed (with the commit), not changed (with the reason), partly, or a question back.
+
+If the repository has no pull request template, develop uses its own, `templates/pr-template.md`. To use your own instead, put it at `~/.claude/dev-work/pr-template.md`. The length and the closing line apply whichever template is used.

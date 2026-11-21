@@ -1,6 +1,6 @@
 export const meta = {
   name: 'execute',
-  description: 'Plans a design and builds it task by task, reviewing each task and then the whole branch, and writes the pull request description',
+  description: 'dev-work: plan, build and review a design',
   whenToUse: 'Started by the dev-work develop skill.',
   phases: [{ title: 'Plan' }, { title: 'Tasks' }, { title: 'Final review' }, { title: 'Write-up' }, { title: 'Review feedback' }],
 }
@@ -64,6 +64,8 @@ const RULINGS = { rulings: arr(str), question: QUESTION }
 const asks = r => !!(r && r.question && typeof r.question.question === 'string' && r.question.question.trim())
 const ASKING = `Return a question for the user only when a wrong guess would be expensive to reverse (a large part would have to be rebuilt, or something would ship that loses data or breaks users' trust), or when doing it would be significant scope creep beyond what the design asked for, so the user decides whether it is now or later. Anything cheap to reverse is a ruling, not a question. A question gives the question in plain terms, reason (expensive to reverse or scope creep) and why, if_guessed (what goes wrong if you guess), the options, and your recommendation. Leave question out when you have none.`
 
+// Added to every PR description the workflow writes, so it's always there whatever the template.
+const FOOTER = '\n\n---\nWritten by agents with [dev-work](https://github.com/sebmartin/dev-work).'
 const LOCAL = 'Work only in this checkout, your current directory: commit on the current branch, never push or touch a remote. Add every change as a new commit: never amend, rebase, reset or otherwise rewrite commits, and never force-add ignored files (no `git add -f`). Put any scratch files in .dev-work/scratch/ in this checkout, never anywhere else. Write commit messages for a stranger: what changed and why, in their own terms.'
 const NO_SUB = 'Do all of this yourself. Never spawn a subagent to do part of it, and above all never spawn a reviewer to check your work.'
 const INPUTS = (A.inputs || []).length ? `\nInput files the design names are in .dev-work/inputs/:\n${A.inputs.map(i => `- .dev-work/inputs/${i.name}: ${i.description}`).join('\n')}` : ''
@@ -561,10 +563,15 @@ ${A.feedback.map((f, i) => { const id = f.id || `PR${R}-${i + 1}`; return `- ${i
 
 ${rulings.filter(x => x.startsWith(`Round ${R}`)).join('\n') || '(none)'}
 
-For each item, write a short reply saying what was done, or why it wasn't, standing on its own. If the round changed anything the description says, return the whole updated description in pr_body; otherwise return pr_body empty.`,
+For each item, write one reply of one or two lines, standing on its own, that starts with what happened:
+- "Fixed in <short commit id>: <what changed>. Test: <name>." when it was fixed;
+- "Not changed: <the reason, concrete>." when it wasn't;
+- "Partly: <what was done, and what wasn't and why>." when only some of it was;
+- "Question: <what's unclear>." when the item can't be acted on as written.
+No thanks, no apologies, and don't restate the comment; disagree with evidence, not tone. If the round changed anything the description says, return the whole updated description in pr_body; otherwise return pr_body empty.`,
     { label: `round-${R}-write-up`, phase: 'Write-up', model: 'sonnet', effort: 'medium', schema: obj({ replies: arr(obj({ id: str, reply: str })), pr_body: str }) })
   if (!w) return result('failed', { stage: 'round write-up' })
-  return result('done', { final_head: loop.head, round: R, outcome, surfaced, replies: w.replies, pr_body: w.pr_body })
+  return result('done', { final_head: loop.head, round: R, outcome, surfaced, replies: w.replies, pr_body: w.pr_body ? w.pr_body.trimEnd() + FOOTER : '' })
 }
 
 // ---------- Plan ----------
@@ -935,10 +942,17 @@ ${finalFix ? `\nFinal fix:\n${finalFix}\n` : ''}
 Surfaced for a human:
 ${surfaced.join('\n') || '(none)'}
 
-Fill in the template. The description must stand on its own: state each decision in its own terms. Return the title and the body.`,
+Fill in the template, writing for a reviewer's time:
+- Aim for about 300 words. Leave out any section that would be empty; never write "None".
+- Under decisions, only those a reviewer could reasonably disagree with, and any you're unsure about: five at most. The other rulings stay out.
+- Under what's not done, only what a reviewer would expect to find in this change. Leave trivia out.
+- No paragraph longer than about three sentences: where there are several separate things, introduce them with a sentence and list them, one line each.
+- Don't describe the diff, which the reviewer can read, and don't tell the reviewer where to look or what to skip.
+- It must stand on its own: state each decision in its own terms.
+Don't add a footer or a note about how this was made; one is added for you. Return the title and the body.`,
   { label: 'write-up', phase: 'Write-up', model: 'sonnet', effort: 'medium', schema: obj({ title: str, body: str }) })
 if (!w) return result('failed', { stage: 'write-up' })
 
-return result('done', { final_head: lastHead, scan: pre.scan, assumptions: plan.assumptions, follow_ups: plan.follow_ups, final_review: final.summary, surfaced, pr_title: w.title, pr_body: w.body })
+return result('done', { final_head: lastHead, scan: pre.scan, assumptions: plan.assumptions, follow_ups: plan.follow_ups, final_review: final.summary, surfaced, pr_title: w.title, pr_body: w.body.trimEnd() + FOOTER })
 }
 try { return await main() } catch (e) { return result('failed', { stage: lastLabel, error: String((e && e.message) || e) }) }
