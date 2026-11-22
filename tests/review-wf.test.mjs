@@ -36,6 +36,8 @@ const defaults = {
   lens: () => ({ findings: [] }),
   consolidator: () => empty,
   codex: () => ({ exit_code: 0, output: JSON.stringify({ findings: [] }), stderr: '' }),
+  verifier: () => ({ threads: [] }),
+  'fix-review': () => ({ findings: [] }),
 }
 // A consolidated finding, and a raw finding as a lens returns it.
 const f = over => ({ sources: ['correctness-1'], path: 'a.js', line: 3, location: 'a.js:3', severity: 'robustness', headline: 'H', lenses: ['correctness'], verdict: 'CONFIRMED', mechanism: 'M', failure_scenario: 'FS', fix: 'FX', in_fixes: false, post: false, ...over })
@@ -264,4 +266,82 @@ test('codex output that is valid JSON but missing required finding fields contri
 test('codex that is unavailable never starts its runner', async () => {
   const { calls } = await run({ ...pr1, codex: { available: false, reason: 'not installed' } })
   assert.ok(!calls.some(c => c.label === 'codex'))
+})
+
+// ---- Later rounds: the verifier ----
+const later = { ...pr1, reviews: [review(1, { full: true, at: 1, commit: sha('a') })],
+  threads: [thread('T1', '🟠 **H** · `a.js:3` <!-- dev-work:review round=1 -->', [{ author: 'seb', body: 'Fixed in abc <!-- dev-work:develop round=1 -->', at: 2 }])] }
+const userSaysLeaveIt = { ...later, threads: [thread('T1', '🟠 **H** · `a.js:3` <!-- dev-work:review round=1 -->', [{ author: 'seb', body: 'leave it', at: 2 }])] }
+const v = (id, action, basis, evidence, reply) => ({ id, action, basis, evidence, reply })
+
+test('a fix that holds resolves the thread on the user\'s PR with a settled reply citing file:line', async () => {
+  const { result, prompt } = await run(later, { verifier: () => ({ threads: [v('T1', 'resolve', 'fix', 'a.js:5', 'Now checked.')] }) })
+  assert.deepEqual(result.review.resolve, ['T1'])
+  assert.match(result.review.replies[0].body, /^\*\*✅ Settled:\*\* Now checked\..*a\.js:5[\s\S]*<!-- dev-work:review round=2 -->$/)
+  assert.match(prompt('verifier'), /develop: Fixed in abc/)
+})
+test('a resolve without file:line evidence leaves the thread open and says nothing', async () => {
+  const { result } = await run(later, { verifier: () => ({ threads: [v('T1', 'resolve', 'fix', 'looks fine', 'ok')] }) })
+  assert.deepEqual(result.review.resolve, []); assert.deepEqual(result.review.replies, []); assert.equal(result.open.should_fix, 1)
+})
+test('the user saying leave it settles the finding without code evidence', async () => {
+  const { result } = await run(userSaysLeaveIt, { verifier: () => ({ threads: [v('T1', 'resolve', 'user', '', 'Left as it is, at the author\'s call.')] }) })
+  assert.deepEqual(result.review.resolve, ['T1'])
+  assert.doesNotMatch(result.review.replies[0].body, /\(\)/)
+})
+test('a fix that does not hold gets a reply saying what is still wrong', async () => {
+  const { result } = await run(later, { verifier: () => ({ threads: [v('T1', 'still_wrong', 'fix', 'a.js:4', 'The guard misses the empty case.')] }) })
+  assert.match(result.review.replies[0].body, /^\*\*Still open:\*\* The guard misses/); assert.equal(result.done, false)
+})
+test('a second pushback in the same thread becomes needs a person and stops blocking', async () => {
+  const twice = { ...later, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: 'Not changed: x <!-- dev-work:develop round=1 -->', at: 2 }, { author: 'seb', body: '**Pushback:** y <!-- dev-work:review round=2 -->', at: 3 }, { author: 'seb', body: 'Not changed: still x <!-- dev-work:develop round=2 -->', at: 4 }])] }
+  const { result } = await run({ ...twice, reviews: [...twice.reviews, review(2, { at: 3, commit: sha('a') })] }, { verifier: () => ({ threads: [v('T1', 'push_back', 'decline', 'a.js:2', 'Both hold their ground.')] }) })
+  assert.match(result.review.replies[0].body, /^\*\*Needs a person:\*\*/)
+  assert.deepEqual(result.needs_human.map(n => n.thread), ['T1']); assert.equal(result.done, true)
+})
+test('a first pushback replies with pushback and keeps the thread open', async () => {
+  const { result } = await run(later, { verifier: () => ({ threads: [v('T1', 'push_back', 'decline', 'a.js:2', 'The reasoning misses the retry.')] }) })
+  assert.match(result.review.replies[0].body, /^\*\*Pushback:\*\* The reasoning/); assert.equal(result.done, false)
+})
+test('a thread already marked needs a person stays on the needs_human list when nothing is verified for it', async () => {
+  const parked = { ...later, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: '**Needs a person:** split view <!-- dev-work:review round=2 -->', at: 3 }], { resolved: true })], reviews: [...later.reviews, review(2, { at: 3, commit: sha('a') })] }
+  const { result } = await run(parked)
+  assert.deepEqual(result.needs_human.map(n => [n.thread, n.why]), [['T1', 'split view']]); assert.equal(result.done, true)
+})
+test('a thread someone else resolved is re-checked and reopened when the fix does not hold', async () => {
+  const resolved = { ...later, threads: [{ ...later.threads[0], resolved: true }] }
+  const { result, prompt } = await run(resolved, { verifier: () => ({ threads: [v('T1', 'still_wrong', 'fix', 'a.js:4', 'Not fixed.')] }) })
+  assert.match(prompt('verifier'), /\[thread T1\]/); assert.deepEqual(result.review.unresolve, ['T1'])
+})
+test('on someone else\'s PR settled threads get a settled reply, nothing is resolved or reopened, and they count as closed', async () => {
+  const theirs = { ...later, pr: { ...later.pr, author: 'stranger' } }
+  const { result } = await run(theirs, { verifier: () => ({ threads: [v('T1', 'resolve', 'fix', 'a.js:5', 'ok')] }) })
+  assert.deepEqual(result.review.resolve, []); assert.match(result.review.replies[0].body, /^\*\*✅ Settled:\*\*/); assert.equal(result.open.should_fix, 0)
+})
+test('a settled reply with CRLF line endings still counts as closed', async () => {
+  const settled = { ...later, pr: { ...later.pr, author: 'stranger' }, threads: [thread('T1', '🟠 **H**\r\n\r\n<!-- dev-work:review round=1 -->', [{ author: 'seb', body: '**✅ Settled:** ok\r\n\r\n<!-- dev-work:review round=2 -->', at: 3 }])] }
+  const { calls, result } = await run({ ...settled, reviews: [...settled.reviews, review(2, { at: 3, commit: sha('a') })] })
+  assert.ok(!calls.some(c => c.label === 'verifier')); assert.equal(result.open.should_fix, 0)
+})
+test('no reply and no change leaves a thread as it is without a comment', async () => {
+  const { result } = await run(later)
+  assert.deepEqual(result.review.replies, [])
+})
+test('a verifier action for an unknown thread is ignored', async () => {
+  const { result } = await run(later, { verifier: () => ({ threads: [v('NOPE', 'resolve', 'fix', 'a.js:1', 'x')] }) })
+  assert.deepEqual(result.review.resolve, []); assert.deepEqual(result.review.replies, [])
+})
+test('human threads are never resolved, never counted, and never verified', async () => {
+  const withHuman = { ...later, threads: [...later.threads, thread('H1', 'what about nulls?', [])] }
+  const { result, prompt } = await run(withHuman, { verifier: () => ({ threads: [v('H1', 'resolve', 'fix', 'a.js:1', 'x'), v('T1', 'resolve', 'fix', 'a.js:5', 'ok')] }) })
+  assert.deepEqual(result.review.resolve, ['T1']); assert.doesNotMatch(prompt('verifier'), /\[thread H1\]/)
+})
+test('another human\'s reply is judged like develop\'s and never settles by itself', async () => {
+  const other = { ...later, pr: { ...later.pr, author: 'stranger' }, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'stranger', body: 'leave it', at: 2 }])] }
+  const { result, prompt } = await run(other, { verifier: () => ({ threads: [v('T1', 'resolve', 'user', '', 'ok')] }) })
+  assert.match(prompt('verifier'), /human: leave it/); assert.deepEqual(result.review.replies, [])
+})
+test('later-round prompts expect no new findings when the fixes hold', async () => {
+  const { prompt } = await run(later)
+  assert.match(prompt('verifier'), /no new findings is the expected result/)
 })

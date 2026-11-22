@@ -34,7 +34,10 @@ const SEV = { blocker: '🔴', robustness: '🟠', cleanup: '🟡' }
 const BLOCKING = ['blocker', 'robustness']
 // A file:line citation: what a refutation (and a resolve) has to show before it drops anything.
 const EVIDENCE_RE = /[\w./-]+:\d+/
-const FOOTER = 'Reviewed by agents with [dev-work](https://github.com/sebmartin/dev-work).'
+const SETTLED = '**✅ Settled:**', STILL = '**Still open:**', PUSHBACK = '**Pushback:**', NEEDS = '**Needs a person:**'
+// In every later-round prompt: when the fixes hold, a round with nothing new is the right outcome.
+const NO_NEW = 'A round with no new findings is the expected result when the fixes hold: say so and stop.'
+const FOOTER ='Reviewed by agents with [dev-work](https://github.com/sebmartin/dev-work).'
 
 // Every object is closed and every property required, so Codex's --output-schema (strict) can take the same schemas.
 const str = { type: 'string' }, bool = { type: 'boolean' }, int = { type: 'integer' }
@@ -57,6 +60,8 @@ const CONSOLIDATED = obj({
   human_replies: arr(obj({ thread: str, reply: str })),
   note: str,
 })
+const VERIFY = obj({ threads: arr(obj({ id: str, action: oneOf(['resolve', 'still_wrong', 'push_back', 'needs_person', 'none']),
+  basis: oneOf(['fix', 'decline', 'user', 'none']), evidence: str, reply: str })) })
 
 let lastLabel = ''
 const ag = (prompt, opts = {}) => { lastLabel = opts.label; return agent(prompt, { agentType: 'dev-work:worker', ...opts }) }
@@ -96,7 +101,7 @@ const threadText = t => [
 ].join('\n')
 
 // What every reviewer is given: the PR, how to see its change, its threads, and the design when there is one.
-const prInfo = () => {
+const prInfo = ({ withThreads = true } = {}) => {
   const { pr } = args
   const threads = [...S.reviewerThreads, ...S.humanThreads]
   const parts = [
@@ -115,12 +120,12 @@ Changed files:
 ${pr.files.map(f => `- ${f}`).join('\n') || '(none)'}
 
 Read-only: change nothing in this checkout; don't run builds or tests.`,
-    `## Comment threads
+  ]
+  if (withThreads) parts.push(`## Comment threads
 
 Each thread is \`[thread <id>] <path>:<line> (resolved|open)\`, then its comments in order, each with who wrote it: reviewer (this review's earlier rounds), develop (the author's agent), user (the person this review works for), human (anyone else).
 
-${threads.map(threadText).join('\n\n') || 'None yet.'}`,
-  ]
+${threads.map(threadText).join('\n\n') || 'None yet.'}`)
   if (hasDesign()) parts.push(`## The Design\n\n${args.design.trim()}`)
   return parts.join('\n\n')
 }
@@ -233,6 +238,109 @@ Each finding is posted as an inline comment in the format: a first line with the
 note: a sentence for the review's summary, only for something the threads don't already say; usually ''. Never list or repeat findings in it, and never write a status: code writes the status.
 
 human_replies: a reply in a thread a person started (its first comment is from user or human), only when you have something to add there, such as evidence that answers their question. A finding a person already raised goes in \`covered\`, never in a reply.`
+
+// ---- Later rounds: what the verifier is asked, and what code does with its answers ----
+
+// Where a reviewer thread stands, from GitHub's state and the latest reviewer reply after the opening comment.
+const latestReviewerReply = t => {
+  const mine = t.comments.slice(1).filter(c => c.kind === 'reviewer')
+  return mine.length ? norm(mine[mine.length - 1].body).trimStart() : null
+}
+const priorState = t => {
+  const r = latestReviewerReply(t)
+  if (r !== null) {
+    if (r.startsWith(SETTLED)) return 'closed'
+    if (r.startsWith(NEEDS)) return 'needs_person'
+    if (r.startsWith(STILL) || r.startsWith(PUSHBACK)) return 'open'
+  }
+  return t.resolved ? 'closed' : 'open'
+}
+// Reviewer threads to check this round: unresolved ones not already settled, and resolved ones (by anyone) with no
+// settled reply from the reviewer.
+const toVerify = () => S.reviewerThreads.filter(t => {
+  const r = latestReviewerReply(t)
+  return t.resolved ? !(r !== null && r.startsWith(SETTLED)) : priorState(t) !== 'closed'
+})
+
+const verifierPrompt = (threads, since) => `${GOAL}
+
+You are the verifier for a later round of this review. Earlier rounds posted findings, each in its own thread. The author's side has answered some: develop (the author's agent) says it fixed a finding or declined it, a person may have replied, and someone may have resolved a thread. For each thread below, decide whether the finding is settled and say so in the thread.
+
+${prInfo({ withThreads: false })}
+
+## What changed since the last round
+
+\`git diff ${since} ${args.pr.head}\`
+
+## The threads to answer
+
+Each comment shows who wrote it: reviewer (this review's earlier rounds), develop (the author's agent), user (the person this review works for), human (anyone else).
+
+${threads.map(threadText).join('\n\n')}
+
+## The rules
+
+For every thread above, return one entry (id, action, basis, evidence, reply):
+- A claimed fix, or a thread whose code was touched: check the code at the head, not the reply. When the fix holds, action resolve, basis fix. When it doesn't, action still_wrong, basis fix, and the reply says what is still wrong.
+- A decline (develop or a person says it will not be changed): when the reasoning holds, action resolve, basis decline. Otherwise push back once, action push_back, basis decline, with specific evidence. When the reviewer already pushed back in this thread, action needs_person, and the reply says what each side holds.
+- A reply from user settles the finding. "Leave it" is action resolve, basis user. "Fix it" keeps it open (action none, or still_wrong when the code still has the problem).
+- A reply from human is the author's side: judge it as you judge develop's. It never settles a finding by itself.
+- No reply and no change: action none.
+- A thread someone else resolved is checked like a claimed fix: reopen it (still_wrong) when the code doesn't hold up.
+- Evidence is a file:line for every resolve except one the user settled. Without it the resolve is not accepted.
+- Replies are a few lines, cite file:line, and stand alone for a stranger reading the pull request. Never quote the design or refer to anything the reader can't see. Leave reply empty for action none.
+- ${NO_NEW}`
+
+// What the verifier's answers turn into, all of it decided here. Ids not in toVerify() are ignored and a missing thread
+// is none. A resolve needs a file:line or the user's own reply; without one it is none.
+const applyVerdicts = vs => {
+  const pending = new Map(toVerify().map(t => [t.id, t]))
+  const given = new Map(list(vs).filter(x => isStr(x.id) && pending.has(x.id)).map(x => [x.id, x]))
+  const out = { replies: [], resolve: [], unresolve: [], states: [], needsHuman: [] }
+  const mark = `\n\n${MARK(S.round)}`
+  const says = (t, action) => {
+    const v = given.get(t.id) || {}
+    const reply = isStr(v.reply) ? v.reply.trim() : ''
+    if (action === 'none' || reply === '') return null
+    return { v, reply }
+  }
+  const needs = (t, why) => out.needsHuman.push({ thread: t.id, url: t.url, why })
+  for (const t of S.reviewerThreads) {
+    const v = given.get(t.id)
+    let action = v && isStr(v.action) ? v.action : 'none'
+    if (action === 'resolve') {
+      const byUser = v.basis === 'user' && t.comments.some(c => c.kind === 'user')
+      if (!byUser && !(isStr(v.evidence) && EVIDENCE_RE.test(v.evidence))) action = 'none'
+    }
+    if (action === 'push_back') {
+      const r = latestReviewerReply(t)
+      if (r !== null && r.startsWith(PUSHBACK)) action = 'needs_person'
+    }
+    const s = says(t, action)
+    let state = priorState(t)
+    if (!s) action = 'none'
+    else if (action === 'resolve') {
+      const cite = v.basis === 'user' ? '' : ` (${v.evidence.trim()})`
+      out.replies.push({ thread: t.id, body: `${SETTLED} ${s.reply}${cite}${mark}` })
+      if (S.mine && !t.resolved) out.resolve.push(t.id)
+      state = 'closed'
+    } else if (action === 'still_wrong') {
+      out.replies.push({ thread: t.id, body: `${STILL} ${s.reply}${mark}` })
+      if (S.mine && t.resolved) out.unresolve.push(t.id)
+      state = 'open'
+    } else if (action === 'push_back') {
+      out.replies.push({ thread: t.id, body: `${PUSHBACK} ${s.reply}${mark}` })
+      state = 'open'
+    } else if (action === 'needs_person') {
+      out.replies.push({ thread: t.id, body: `${NEEDS} ${s.reply}${mark}` })
+      needs(t, s.reply)
+      state = 'needs_person'
+    } else action = 'none'
+    if (action === 'none' && state === 'needs_person') needs(t, stripMarks(latestReviewerReply(t) || '').slice(NEEDS.length).trim())
+    out.states.push({ severity: t.severity, state, nonblocking: false })
+  }
+  return out
+}
 
 // ---- The round ----
 
@@ -493,6 +601,14 @@ const main = async () => {
 
   const fullPass = true
   const scout = must(await ag(scoutPrompt(), { label: 'scout', phase: 'Scout', ...tier('sonnet'), schema: SCOUT }), 'scout')
+  // Later rounds: answer each earlier finding's thread before looking for anything new.
+  const stale = toVerify()
+  const since = S.last && S.last.commit && args.since_fetched ? S.last.commit : pr.base
+  const verdicts = stale.length
+    ? must(await ag(verifierPrompt(stale, since), { label: 'verifier', phase: 'Verify', ...tier('opus'), schema: VERIFY }), 'verifier')
+    : { threads: [] }
+  const applied = applyVerdicts(verdicts.threads)
+
   const surfaces = list(scout.surfaces).filter(s => isStr(s.file))
   const tags = new Set(surfaces.flatMap(s => (Array.isArray(s.tags) ? s.tags : [])))
   const lensModel = name => (name === 'security' ? (tags.has('auth') || tags.has('untrusted_input') ? 'opus' : 'sonnet') : LENS_MODEL[name])
@@ -506,7 +622,7 @@ const main = async () => {
   const c = must(await ag(consolidatorPrompt(surfaces), { label: 'consolidator', phase: 'Consolidate', ...tier('opus'), schema: CONSOLIDATED }), 'consolidator')
   const { posted, droppedMinor } = toPost(c, { fullPass })
 
-  const states = posted.map(f => ({ severity: f.severity, state: 'open', nonblocking: false }))
+  const states = [...applied.states, ...posted.map(f => ({ severity: f.severity, state: 'open', nonblocking: false }))]
   const done = isDone(states)
   const open = openCounts(states)
   const humanIds = new Set(S.humanThreads.map(t => t.id))
@@ -518,11 +634,11 @@ const main = async () => {
     commit: pr.head,
     body: summary({ round: S.round, fullPass, since: S.last ? S.last.round : null, done, open, droppedMinor, note: c.note, limit: null }),
     comments: posted.map(f => ({ path: f.path, line: f.line, body: render(f, S.round) })),
-    replies,
-    resolve: [],
-    unresolve: [],
+    replies: [...applied.replies, ...replies],
+    resolve: applied.resolve,
+    unresolve: applied.unresolve,
   }
-  return result('done', { done, round: S.round, full_pass: fullPass, open, review, codex: { ran: codex.ran, reason: codex.reason } })
+  return result('done', { done, round: S.round, full_pass: fullPass, open, needs_human: applied.needsHuman, review, codex: { ran: codex.ran, reason: codex.reason } })
 }
 
 try { return await main() } catch (e) { return result('failed', { stage: (e && e.stage) || lastLabel, error: String((e && e.message) || (e && e.stage) || e) }) }
