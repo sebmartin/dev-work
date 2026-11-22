@@ -106,6 +106,8 @@ const disposition = t => (RP && DISPOSITIONS.includes(t.disposition) && !demoted
 const demotedBecause = t => !Number.isInteger(t.from) ? 'it names no earlier task in from'
   : !firstClaim(t) ? `another kept task already comes from earlier task ${t.from}`
   : `the earlier run does not record task ${t.from} as done`
+// Only an earlier task recorded as in progress left partial commits on the branch.
+const partlyBuilt = t => Number.isInteger(t.from) && firstClaim(t) && (RP.tasks || []).some(o => o.task === t.from && o.state === 'in progress')
 const why = t => `${t.reason || 'no reason given'}${demoted(t) ? `; marked kept, but ${demotedBecause(t)}, so it is built` : ''}`
 const skipped = t => ['kept', 'dropped'].includes(disposition(t))
 
@@ -765,7 +767,7 @@ for (const t of plan.tasks) {
   const n = t.n, base = lastHead, entry = { task: n, title: t.title, state: 'done', rounds: 0, parked: 0 }
   current = { n, base, review: '', open: [] }
   let model = modelFor(n)
-  const revising = disposition(t) === 'revised' || demoted(t) ? `\n\nThis task was at least partly built in an earlier run and is being revised (${why(t)}): change what is on the branch rather than building it again.` : ''
+  const revising = disposition(t) === 'revised' || (demoted(t) && partlyBuilt(t)) ? `\n\nThis task was at least partly built in an earlier run and is being revised (${why(t)}): change what is on the branch rather than building it again.` : ''
   const context = `Task ${n} of ${plan.tasks.length}. The plan's overview:\n\n${plan.overview}${revising}`
   const applicable = () => rulings.slice()
 

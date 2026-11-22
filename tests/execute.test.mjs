@@ -557,6 +557,13 @@ test('a task marked kept that the earlier run did not finish is built', async ()
   assert.ok(r2.calls.some(c => c.label === 'implement-1'))
   assert.match(r2.prompt('implement-1'), /change what is on the branch/)
   assert.match(r2.prompt('review-1'), /being revised/)
+  // Not started in the earlier run: nothing is on the branch, so no revision note reaches the implementer or reviewer.
+  assert.doesNotMatch(prompt('implement-2'), /change what is on the branch|at least partly built/)
+  assert.doesNotMatch(prompt('review-2'), /being revised|already on the branch before Base/)
+  const noted = { ...replanArgs, replan: { ...replanArgs.replan, tasks: [{ task: 1, title: 'one', state: 'done' }, { task: 2, title: 'two', state: 'not started' }] } }
+  const r3 = await run(noted, { plan: keptPlan([{ n: 1, title: 'two', text: 'T', disposition: 'kept', reason: 'r', from: 2 }]) })
+  assert.doesNotMatch(r3.prompt('implement-1'), /change what is on the branch/)
+  assert.doesNotMatch(r3.prompt('review-1'), /being revised/)
 })
 
 test('a kept task is matched to the earlier run by from, not by its new number', async () => {
