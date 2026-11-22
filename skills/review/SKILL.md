@@ -42,7 +42,7 @@ If any review has state `PENDING`, report it with the PR link and stop: there is
 
 The worktree is `<repository>/.claude/worktrees/review-<PR number>`.
 
-1. Remove one left from an earlier run first: `git worktree remove --force <path>`.
+1. If one was left from an earlier run (it shows in `git worktree list`), remove it first with `git worktree remove --force <path>`. When there is none, skip this step.
 2. `git fetch origin refs/pull/<n>/head` and `git fetch origin <baseRefOid>`.
 3. `git worktree add --detach <path> <headRefOid>`.
 4. Hide `.claude/worktrees/` through the file `git rev-parse --git-path info/exclude` names (add the line if it isn't there).
@@ -74,9 +74,9 @@ Read every comment in `review` (bodies, replies, summary) for anything private: 
 
 When `review` is not null, post it through GraphQL:
 
-1. `addPullRequestReview(pullRequestId, commitOID: review.commit)` makes a pending review.
-2. Each comment goes in with `addPullRequestReviewThread` (`path`, `line`, `side: RIGHT`; `subjectType: FILE` when `line` is 0). A comment GitHub rejects for its line is retried file-level on the same path.
-3. Each reply goes in with `addPullRequestReviewThreadReply` on its thread.
+1. `addPullRequestReview(pullRequestId, commitOID: review.commit)` makes a pending review. Keep its `pullRequestReview.id`.
+2. Each comment goes in with `addPullRequestReviewThread` (`pullRequestReviewId` set to the id from step 1, `path`, `line`, `side: RIGHT`; `subjectType: FILE` when `line` is 0). A comment GitHub rejects for its line is retried file-level on the same path.
+3. Each reply goes in with `addPullRequestReviewThreadReply` on its thread, with `pullRequestReviewId` set to the id from step 1. Never leave `pullRequestReviewId` out of either call: without it the comment is posted on its own, outside the pending review.
 4. On `event: COMMENT`: `submitPullRequestReview(event: COMMENT, body)`, then `resolveReviewThread` for each of `resolve` and `unresolveReviewThread` for each of `unresolve`.
 5. On `event: PENDING`: `updatePullRequestReview(body)` and leave it pending for the user to read and submit.
 

@@ -263,6 +263,13 @@ test('codex output that is valid JSON but missing required finding fields contri
   const { result, prompt } = await run(pr1, { codex: () => ({ exit_code: 0, output: JSON.stringify({ findings: [{ file: 'a.js', headline: 'half' }] }), stderr: '' }) })
   assert.equal(result.codex.ran, false); assert.match(result.codex.reason, /schema/); assert.doesNotMatch(prompt('consolidator'), /half/)
 })
+test('codex output with a bad severity, a non-integer line, a non-array findings or a null item contributes nothing', async () => {
+  const good = { file: 'a.js', line: 3, headline: 'h', severity: 'blocker', lens: 'x', mechanism: 'm', failure_scenario: 'f', fix: 'x' }
+  for (const out of [{ findings: [{ ...good, severity: 'urgent' }] }, { findings: [{ ...good, line: 3.5 }] }, { findings: 'none' }, { findings: [null] }]) {
+    const { result } = await run(pr1, { codex: () => ({ exit_code: 0, output: JSON.stringify(out), stderr: '' }) })
+    assert.equal(result.codex.ran, false); assert.match(result.codex.reason, /schema/)
+  }
+})
 test('codex that is unavailable never starts its runner', async () => {
   const { calls } = await run({ ...pr1, codex: { available: false, reason: 'not installed' } })
   assert.ok(!calls.some(c => c.label === 'codex'))
@@ -307,6 +314,20 @@ test('a second pushback is caught even when a Still open reply came between the 
 test('a first pushback replies with pushback and keeps the thread open', async () => {
   const { result } = await run(later, { verifier: () => ({ threads: [v('T1', 'push_back', 'decline', 'a.js:2', 'The reasoning misses the retry.')] }) })
   assert.match(result.review.replies[0].body, /^\*\*Pushback:\*\* The reasoning/); assert.equal(result.done, false)
+})
+test('a user reply after a Settled reply sends the thread back to the verifier and keeps it open', async () => {
+  const t = thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: '**✅ Settled:** ok <!-- dev-work:review round=2 -->', at: 3 }, { author: 'seb', body: 'No, this is still broken, fix it', at: 4 }])
+  const p = { ...later, threads: [t], reviews: [...later.reviews, review(2, { at: 3, commit: sha('a') })] }
+  const { calls, result, prompt } = await run(p)
+  assert.ok(calls.some(c => c.label === 'verifier')); assert.match(prompt('verifier'), /still broken/); assert.equal(result.open.should_fix, 1)
+})
+test('a parked Needs a person thread is not verified again unless someone replied after it', async () => {
+  const parked = thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: '**Needs a person:** split <!-- dev-work:review round=2 -->', at: 3 }])
+  const base = { ...later, reviews: [...later.reviews, review(2, { at: 3, commit: sha('a') })] }
+  const quiet = await run({ ...base, threads: [parked] })
+  assert.ok(!quiet.calls.some(c => c.label === 'verifier')); assert.deepEqual(quiet.result.review?.replies ?? [], [])
+  const replied = await run({ ...base, threads: [{ ...parked, comments: [...parked.comments, { author: 'seb', body: 'go with the split', at: 4 }] }] })
+  assert.ok(replied.calls.some(c => c.label === 'verifier'))
 })
 test('a thread already marked needs a person stays on the needs_human list when nothing is verified for it', async () => {
   const parked = { ...later, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: '**Needs a person:** split view <!-- dev-work:review round=2 -->', at: 3 }], { resolved: true })], reviews: [...later.reviews, review(2, { at: 3, commit: sha('a') })] }

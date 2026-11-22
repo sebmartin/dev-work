@@ -318,20 +318,32 @@ const latestReviewerReply = t => {
   const mine = t.comments.slice(1).filter(c => c.kind === 'reviewer')
   return mine.length ? norm(mine[mine.length - 1].body).trimStart() : null
 }
+// True when someone other than the reviewer commented after the reviewer's latest comment in the thread.
+const repliedAfterReviewer = t => {
+  const i = t.comments.map(c => c.kind).lastIndexOf('reviewer')
+  return t.comments.slice(i + 1).length > 0
+}
 const priorState = t => {
   const r = latestReviewerReply(t)
   if (r !== null) {
-    if (r.startsWith(SETTLED)) return 'closed'
-    if (r.startsWith(NEEDS)) return 'needs_person'
+    if (r.startsWith(SETTLED) || r.startsWith(NEEDS)) {
+      // A reply after a settled or parked thread reopens it until the verifier has read the reply.
+      if (repliedAfterReviewer(t)) return 'open'
+      return r.startsWith(SETTLED) ? 'closed' : 'needs_person'
+    }
     if (r.startsWith(STILL) || r.startsWith(PUSHBACK)) return 'open'
   }
   return t.resolved ? 'closed' : 'open'
 }
-// Reviewer threads to check this round: unresolved ones not already settled, and resolved ones (by anyone) with no
+// Reviewer threads to check this round: any with a comment after the reviewer's latest one (so a reply after a
+// settled or parked thread is read), then unresolved ones not settled or parked, and resolved ones (by anyone) with no
 // settled reply from the reviewer.
 const toVerify = () => S.reviewerThreads.filter(t => {
+  if (repliedAfterReviewer(t)) return true
   const r = latestReviewerReply(t)
-  return t.resolved ? !(r !== null && r.startsWith(SETTLED)) : priorState(t) !== 'closed'
+  if (r !== null && r.startsWith(SETTLED)) return false
+  if (!t.resolved && r !== null && r.startsWith(NEEDS)) return false
+  return t.resolved ? true : priorState(t) !== 'closed'
 })
 
 const verifierPrompt = (threads, since) => `${GOAL}
