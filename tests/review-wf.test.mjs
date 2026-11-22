@@ -30,9 +30,15 @@ function thread(id, firstBody, replies, { resolved = false } = {}, firstAuthor =
 }
 
 // What each agent returns, by label, unless a test overrides it. Later tasks add to these.
+const empty = { findings: [], refuted: [], covered: [], human_replies: [], note: '' }
 const defaults = {
-  scout: () => ({ verdict: 'normal' }),
+  scout: () => ({ surfaces: [{ file: 'a.js', tags: ['persistence'] }], lenses: ['correctness', 'quality'], full_pass: false, reason: '' }),
+  lens: () => ({ findings: [] }),
+  consolidator: () => empty,
 }
+// A consolidated finding, and a raw finding as a lens returns it.
+const f = over => ({ sources: ['correctness-1'], path: 'a.js', line: 3, location: 'a.js:3', severity: 'robustness', headline: 'H', lenses: ['correctness'], verdict: 'CONFIRMED', mechanism: 'M', failure_scenario: 'FS', fix: 'FX', in_fixes: false, post: false, ...over })
+const rawF = over => ({ file: 'a.js', line: 3, headline: 'H', severity: 'robustness', lens: 'correctness', mechanism: 'M', failure_scenario: 'FS', fix: 'FX', ...over })
 const kind = label => (label.startsWith('lens-') ? 'lens' : label)
 
 async function run(args, overrides = {}) {
@@ -92,4 +98,126 @@ test('an agent that returns nothing ends the run as a failed result, never a thr
 test('every agent runs as a dev-work worker and its prompt starts with the review\'s goal', async () => {
   const { calls } = await run(pr1)
   for (const c of calls) { assert.equal(c.opts.agentType, 'dev-work:worker', c.label); assert.ok(c.label === 'codex' || c.prompt.startsWith(GOAL_TEXT), c.label) }
+})
+
+test('round 1 runs the scout, the lenses it picks plus correctness and intent, then the consolidator', async () => {
+  const { calls } = await run({ ...pr1, codex: { available: false, reason: 'not installed' } }, { scout: () => ({ surfaces: [], lenses: ['security'], full_pass: false, reason: '' }) })
+  assert.deepEqual(calls.map(c => c.label).sort(), ['consolidator', 'lens-correctness', 'lens-intent', 'lens-security', 'scout'])
+  assert.ok(calls.findIndex(c => c.label === 'consolidator') === calls.length - 1)
+})
+
+test('without a design the intent lens never runs and the review still completes', async () => {
+  const { calls, result } = await run({ ...pr1, design: '' }, { scout: () => ({ surfaces: [], lenses: ['intent'], full_pass: false, reason: '' }) })
+  assert.ok(!calls.some(c => c.label === 'lens-intent')); assert.equal(result.status, 'done')
+  assert.doesNotMatch(calls.map(c => c.prompt).join('\n'), /THE-DESIGN/)
+})
+
+test('the intent lens checks the design and treats the description as claims', async () => {
+  const { prompt } = await run(pr1, { scout: () => ({ surfaces: [], lenses: [], full_pass: false, reason: '' }) })
+  assert.match(prompt('lens-intent'), /THE-DESIGN/); assert.match(prompt('lens-intent'), /PR-BODY/); assert.match(prompt('lens-intent'), /claims to verify/)
+})
+
+test('round 1 is one COMMENT review on the user\'s own PR: findings inline, marker on each, summary and footer', async () => {
+  const { result } = await run(pr1, { 'lens-correctness': () => ({ findings: [rawF({ severity: 'robustness' })] }), consolidator: () => ({ ...empty, findings: [f()] }) })
+  const r = result.review
+  assert.equal(r.event, 'COMMENT'); assert.equal(r.commit, sha('c')); assert.equal(r.comments.length, 1)
+  assert.deepEqual([r.comments[0].path, r.comments[0].line], ['a.js', 3])
+  assert.match(r.comments[0].body, /^🟠 \*\*H\*\* · `a\.js:3` · correctness · CONFIRMED\n\n\*\*Mechanism\.\*\* M\n\n\*\*Failure scenario\.\*\* FS\n\n\*\*Fix\.\*\* FX/)
+  assert.match(r.comments[0].body, /<!-- dev-work:review round=1 -->$/)
+  assert.match(r.body, /^\*\*Round 1: full review\.\*\*/); assert.match(r.body, /Open: 0 🔴, 1 🟠\./)
+  assert.match(r.body, /Reviewed by agents with \[dev-work\]\(https:\/\/github\.com\/sebmartin\/dev-work\)\.\n\n<!-- dev-work:review round=1 -->$/)
+  assert.doesNotMatch(r.body, /\*\*H\*\*/)   // the summary never repeats a finding
+  assert.deepEqual([result.done, result.round, result.full_pass, result.open], [false, 1, true, { blocking: 0, should_fix: 1 }])
+})
+
+test('on someone else\'s PR the round is a pending draft that resolves nothing', async () => {
+  const { result } = await run({ ...pr1, pr: { ...pr1.pr, author: 'stranger' } })
+  assert.equal(result.review.event, 'PENDING'); assert.deepEqual(result.review.resolve, []); assert.deepEqual(result.review.unresolve, [])
+})
+
+test('a round with no findings is done in code\'s words and the agent adds nothing', async () => {
+  const { result } = await run(pr1, { consolidator: () => ({ ...empty, note: 'AGENT-NOTE' }) })
+  assert.equal(result.done, true); assert.match(result.review.body, /No further findings\. Review done\./); assert.doesNotMatch(result.review.body, /AGENT-NOTE/)
+})
+
+test('an agent note that reads like a status line is left out, so a later run never mistakes it for one', async () => {
+  const { result } = await run(pr1, { consolidator: () => ({ ...empty, findings: [f()], note: 'Review done. Ship it.' }) })
+  assert.doesNotMatch(result.review.body, /Ship it/)
+})
+
+test('blockers and should-fix findings are never filtered', async () => {
+  const { result } = await run(pr1, { consolidator: () => ({ ...empty, findings: [f({ severity: 'blocker', post: false }), f({ severity: 'robustness', post: false, line: 4 })] }) })
+  assert.equal(result.review.comments.length, 2)
+})
+
+test('a finding any source rated 🔴 or 🟠 is posted even when the consolidator downgrades it', async () => {
+  const { result } = await run(pr1, { 'lens-correctness': () => ({ findings: [rawF({ severity: 'blocker' })] }), consolidator: () => ({ ...empty, findings: [f({ severity: 'cleanup', post: false, sources: ['correctness-1'] })] }) })
+  assert.equal(result.review.comments.length, 1); assert.match(result.review.comments[0].body, /^🟡/)
+})
+
+test('a 🔴 or 🟠 source the consolidator leaves out is posted from the source as PLAUSIBLE', async () => {
+  const { result } = await run(pr1, { 'lens-correctness': () => ({ findings: [rawF({ severity: 'blocker', headline: 'LOST' })] }) })
+  assert.match(result.review.comments[0].body, /^🔴 \*\*LOST\*\*.*PLAUSIBLE/)
+})
+
+test('a refuted 🔴 needs file:line evidence to be dropped', async () => {
+  const lens = { 'lens-correctness': () => ({ findings: [rawF({ severity: 'blocker' })] }) }
+  const bare = await run(pr1, { ...lens, consolidator: () => ({ ...empty, refuted: [{ sources: ['correctness-1'], evidence: 'it is fine' }] }) })
+  assert.equal(bare.result.review.comments.length, 1)
+  const cited = await run(pr1, { ...lens, consolidator: () => ({ ...empty, refuted: [{ sources: ['correctness-1'], evidence: 'guarded at a.js:12' }] }) })
+  assert.equal(cited.result.review.comments.length, 0)
+})
+
+test('a covered entry naming an unknown thread does not drop a blocker', async () => {
+  const { result } = await run(pr1, { 'lens-correctness': () => ({ findings: [rawF({ severity: 'blocker' })] }), consolidator: () => ({ ...empty, covered: [{ sources: ['correctness-1'], thread: 'NOPE' }] }) })
+  assert.equal(result.review.comments.length, 1)
+})
+
+test('a covered entry naming an existing thread drops the source finding', async () => {
+  const { result } = await run({ ...pr1, threads: [thread('H1', 'what about nulls?', [])] }, { 'lens-correctness': () => ({ findings: [rawF({ severity: 'blocker' })] }), consolidator: () => ({ ...empty, covered: [{ sources: ['correctness-1'], thread: 'H1' }] }) })
+  assert.equal(result.review.comments.length, 0)
+})
+
+test('each 🟡 is posted only when the consolidator weighs it worth posting, and a full pass counts what it left out', async () => {
+  const { result } = await run(pr1, { consolidator: () => ({ ...empty, findings: [f({ severity: 'cleanup', post: true, sources: [] }), f({ severity: 'cleanup', post: false, sources: [], line: 5 }), f({ severity: 'cleanup', post: false, sources: [], line: 6 })] }) })
+  assert.equal(result.review.comments.length, 1); assert.match(result.review.body, /2 minor points were left out\./)
+})
+
+test('there is no cap on findings', async () => {
+  const many = Array.from({ length: 20 }, (_, i) => f({ severity: 'robustness', line: i + 1 }))
+  const { result } = await run(pr1, { consolidator: () => ({ ...empty, findings: many }) })
+  assert.equal(result.review.comments.length, 20)
+})
+
+test('a finding anchored outside the PR\'s files is posted file-level on the first changed file', async () => {
+  const { result } = await run(pr1, { consolidator: () => ({ ...empty, findings: [f({ path: 'elsewhere.js', line: 9, location: 'elsewhere.js:9' })] }) })
+  assert.deepEqual([result.review.comments[0].path, result.review.comments[0].line], ['a.js', 0])
+  assert.match(result.review.comments[0].body, /`elsewhere\.js:9`/)
+})
+
+test('the consolidator\'s replies go only in human threads, each with the marker', async () => {
+  const { result } = await run({ ...pr1, threads: [thread('H1', 'what about nulls?', [])] }, { consolidator: () => ({ ...empty, human_replies: [{ thread: 'H1', reply: 'Nulls are guarded at a.js:2.' }, { thread: 'NOPE', reply: 'x' }] }) })
+  assert.deepEqual(result.review.replies, [{ thread: 'H1', body: 'Nulls are guarded at a.js:2.\n\n<!-- dev-work:review round=1 -->' }])
+})
+
+test('the security lens runs on opus when the scout flags an auth or untrusted-input surface', async () => {
+  const hot = await run(pr1, { scout: () => ({ surfaces: [{ file: 'a.js', tags: ['untrusted_input'] }], lenses: ['security'], full_pass: false, reason: '' }) })
+  assert.equal(hot.calls.find(c => c.label === 'lens-security').opts.model, 'opus')
+  const cold = await run(pr1, { scout: () => ({ surfaces: [{ file: 'a.js', tags: ['persistence'] }], lenses: ['security'], full_pass: false, reason: '' }) })
+  assert.equal(cold.calls.find(c => c.label === 'lens-security').opts.model, 'sonnet')
+})
+
+test('a lens that returns nothing fails the run at that lens', async () => {
+  const { result } = await run(pr1, { 'lens-quality': () => null })
+  assert.equal(result.status, 'failed'); assert.equal(result.stage, 'lens-quality')
+})
+
+test('the result reports output tokens from the budget', async () => {
+  assert.equal((await run(pr1)).result.output_tokens, 4321)
+})
+
+test('the lenses see the diff range, the PR text and the design, and never a plan', async () => {
+  const { prompt } = await run(pr1)
+  for (const x of [`git diff ${sha('b')} ${sha('c')}`, 'PR-BODY', 'THE-DESIGN']) assert.ok(prompt('lens-correctness').includes(x), x)
+  assert.doesNotMatch(prompt('lens-correctness'), /implementation-plan/)
 })
