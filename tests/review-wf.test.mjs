@@ -233,6 +233,15 @@ test('the codex runner is told the exact command, the prompt with the goal and d
   for (const x of ['codex exec -s read-only --output-schema', ' -o ', GOAL_TEXT, 'THE-DESIGN', '"additionalProperties":false']) assert.ok(prompt('codex').includes(x), x)
   assert.ok(calls.find(c => c.label === 'codex').opts.schema.required.includes('exit_code'))
 })
+test('a PR body with code fences is fenced off by a longer fence in the codex runner prompt', async () => {
+  const body = 'before\n```js\nx()\n````\nafter-fence'
+  const { prompt } = await run({ ...pr1, pr: { ...pr1.pr, body } })
+  const p = prompt('codex')
+  const fences = p.split('\n').filter(l => /^`{5,}$/.test(l))
+  assert.equal(fences.length, 2); assert.equal(fences[0], fences[1])
+  const inner = p.slice(p.indexOf(fences[0]) + fences[0].length, p.lastIndexOf(fences[1]))
+  assert.ok(inner.includes(body)); assert.ok(!inner.includes(fences[0]))
+})
 test('every way codex can fail leaves the same lenses and a complete review, with the reason', async () => {
   const cases = [
     [{ ...pr1, codex: { available: false, reason: 'not signed in' } }, {}, /not signed in/],

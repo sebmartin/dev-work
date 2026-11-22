@@ -315,19 +315,25 @@ If the change looks safe, say so directly and return no findings.
 ${prInfo()}
 </repository_context>`
 
-const runnerPrompt = () => `You run one command for a review and hand back what it produced. You are not a reviewer: do not review anything, and never retry, fix, summarise or reword the output.
+// The fence around the Codex prompt is longer than any backtick run inside it: the PR body, threads and design carry
+// their own ``` code blocks, and a plain triple fence would close at the first of them.
+const runnerPrompt = () => {
+  const text = codexPrompt()
+  const fence = '`'.repeat(Math.max(3, Math.max(0, ...(text.match(/`+/g) || []).map(m => m.length)) + 1))
+  return `You run one command for a review and hand back what it produced. You are not a reviewer: do not review anything, and never retry, fix, summarise or reword the output.
 
 1. Make a temporary directory with \`mktemp -d\`; call it <dir>.
-2. Write the text between the fences below, exactly as it is, to <dir>/prompt.md.
+2. Write the text between the two fence lines below (a line of only backticks, the same length at both ends; backtick lines inside the text belong to it), exactly as it is, to <dir>/prompt.md.
 3. Write this JSON, exactly as it is, to <dir>/schema.json:
 ${JSON.stringify(CODEX_SCHEMA)}
 4. From the current directory, run \`codex exec -s read-only --output-schema <dir>/schema.json -o <dir>/out.json - < <dir>/prompt.md\` with the Bash timeout at its maximum, 600000 ms.
 5. Return exit_code: the command's exit status, or -1 if it timed out or couldn't start. Return output: the full contents of <dir>/out.json verbatim, or '' if it is missing. Return stderr: the last 20 lines of the command's error output.
 6. Remove <dir>.
 
-\`\`\`
-${codexPrompt()}
-\`\`\``
+${fence}
+${text}
+${fence}`
+}
 
 const FINDING_TYPES = { file: isStr, line: Number.isInteger, headline: isStr, severity: v => Object.keys(SEV).includes(v), lens: isStr, mechanism: isStr, failure_scenario: isStr, fix: isStr }
 // The check that decides whether Codex contributes: its run is accepted only on exit 0 with output that parses
