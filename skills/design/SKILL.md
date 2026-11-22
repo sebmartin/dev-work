@@ -1,6 +1,6 @@
 ---
 name: design
-description: Works out a thread todo's design with the user, saved in the todo's dev-work folder in its thread, ready for /dev-work:develop. Use when the user types /dev-work:design, asks to design a todo for dev-work, or asks to revise a todo's dev-work design, including after /dev-work:develop stopped because the design was missing something.
+description: Works out a thread todo's design with the user, saved in the todo's dev-work folder in its thread, ready for /dev-work:develop. Use when the user types /dev-work:design, asks to design a todo for dev-work, or asks to revise a todo's dev-work design, including after /dev-work:develop paused on a question about the design.
 ---
 
 # dev-work: design

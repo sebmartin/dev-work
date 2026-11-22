@@ -5,7 +5,7 @@ export const meta = {
   phases: [{ title: 'Plan' }, { title: 'Tasks' }, { title: 'Final review' }, { title: 'Write-up' }, { title: 'Review feedback' }],
 }
 
-// args: { design, inputs, pr_template, base, feedback?, round?, pr?, head? }
+// args: { design, inputs, pr_template, base, feedback?, round?, pr?, head?, replan? }
 //   design       the design's text, verbatim
 //   inputs       [{ name, description }] for files the session staged in .dev-work/inputs/
 //   pr_template  the PR template's text
@@ -13,6 +13,12 @@ export const meta = {
 //   feedback     for a review round: [{ id, text }] from the PR's review and the user
 //   round, pr    the round number and the PR's current description
 //   head         for a review round: the branch's commit id before the round
+//   replan       to re-plan a branch an earlier run built part of: { source, plan, tasks, rulings, deferred,
+//                parked, declined, surfaced, decision, head }. source is 'paused' or 'failed' when the earlier run's result
+//                exists, 'saved-plan' when only its plan and the branch do (then tasks, rulings, deferred, parked,
+//                declined and surfaced are empty); decision is the decision-log text added since the pause, or ''; head is
+//                the branch's current commit. Each planned task comes back kept, revised, new or dropped,
+//                and only revised and new tasks are built.
 //
 // Every agent runs in the session's working directory, the worktree, as a dev-work worker: it gets only
 // its prompt, never the threads tools. Everything passes as text in prompts and structured results; no
@@ -25,7 +31,8 @@ export const meta = {
 // process and wording, with text in and out
 // instead of brief, report and diff files. Following later Superpowers changes is a deliberate step.
 const A = args
-const ag = (prompt, opts = {}) => agent(prompt, { agentType: 'dev-work:worker', ...opts })
+let lastLabel = ''
+const ag = (prompt, opts = {}) => { lastLabel = opts.label; return agent(prompt, { agentType: 'dev-work:worker', ...opts }) }
 const CAP = 5
 const TIERS = ['haiku', 'sonnet', 'opus']
 const up = m => TIERS[Math.min(TIERS.indexOf(m) + 1, TIERS.length - 1)]
@@ -37,8 +44,10 @@ const SHA = { type: 'string', pattern: '^[0-9a-f]{40}$', description: 'the full 
 const obj = (props, req = Object.keys(props)) => ({ type: 'object', properties: props, required: req })
 const arr = items => ({ type: 'array', items })
 const SEV = { type: 'string', enum: ['Critical', 'Important', 'Minor'] }
-const FINDING = obj({ id: str, severity: SEV, text: str, plan_mandated: bool }, ['id', 'severity', 'text'])
+const FINDING = obj({ id: str, severity: SEV, text: str, consequence: { type: 'string', description: 'what actually goes wrong, and for whom, if this ships as it is' }, plan_mandated: bool }, ['id', 'severity', 'text', 'consequence'])
 const PLAN = obj({ overview: str, global_constraints: str, review_focus: str, assumptions: arr(str), follow_ups: arr(str), tasks: arr(obj({ n: int, title: str, text: str })) })
+const DISPOSITIONS = ['kept', 'revised', 'new', 'dropped']
+const REPLAN = { ...PLAN, properties: { ...PLAN.properties, tasks: arr(obj({ n: int, title: str, text: str, disposition: { type: 'string', enum: DISPOSITIONS }, reason: str, from: { type: 'integer', description: 'for a kept or revised task, the old plan task number it comes from, as the outcomes list numbers it' } }, ['n', 'title', 'text', 'disposition', 'reason'])) } }
 const IMPL = obj({
   status: { type: 'string', enum: ['DONE', 'DONE_WITH_CONCERNS', 'NEEDS_CONTEXT', 'BLOCKED'] },
   head_sha: SHA,
@@ -50,19 +59,90 @@ const REVIEW = obj({ spec_verdict: { type: 'string', enum: ['pass', 'fail'] }, c
 const REREVIEW = obj({ results: arr(obj({ id: str, addressed: bool, evidence: { type: 'string', description: 'file:line showing the fix, or the evidence that it should not change' } })), new_findings: arr(FINDING), out_of_scope: arr(str) })
 // A finding counts as addressed only with evidence: a bare "addressed" from a quick look doesn't close it.
 const closed = rr => new Set(rr.results.filter(r => r.addressed && (r.evidence || '').trim()).map(r => r.id))
-const RULINGS = { rulings: arr(str), stop: bool, stop_reason: str }
+const QUESTION = obj({ question: str, reason: { type: 'string', enum: ['expensive to reverse', 'scope creep'] }, why: str, if_guessed: str, options: arr(str), recommendation: str })
+const RULINGS = { rulings: arr(str), question: QUESTION }
+const asks = r => !!(r && r.question && typeof r.question.question === 'string' && r.question.question.trim())
+const ASKING = `Return a question for the user only when a wrong guess would be expensive to reverse (a large part would have to be rebuilt, or something would ship that loses data or breaks users' trust), or when doing it would be significant scope creep beyond what the design asked for, so the user decides whether it is now or later. Anything cheap to reverse is a ruling, not a question. A question gives the question in plain terms, reason (expensive to reverse or scope creep) and why, if_guessed (what goes wrong if you guess), the options, and your recommendation. Leave question out when you have none.`
 
 // Added to every PR description the workflow writes, so it's always there whatever the template.
 const FOOTER = '\n\n---\nWritten by agents with [dev-work](https://github.com/sebmartin/dev-work).'
+// A review round is given the PR's current description, which already ends with the footer; strip any before adding one.
+// Tolerant of CRLF (a description edited on GitHub comes back with \r\n), a changed link or a missing period.
+const FOOTER_RE = /\n*-{3,}[ \t]*\n[ \t]*Written by agents with \[dev-work\]\([^)]*\)\.?[ \t]*/g
+const withFooter = body => body.replace(/\r\n/g, '\n').replace(FOOTER_RE, '').trimEnd() + FOOTER
 const LOCAL = 'Work only in this checkout, your current directory: commit on the current branch, never push or touch a remote. Add every change as a new commit: never amend, rebase, reset or otherwise rewrite commits, and never force-add ignored files (no `git add -f`). Put any scratch files in .dev-work/scratch/ in this checkout, never anywhere else. Write commit messages for a stranger: what changed and why, in their own terms.'
 const NO_SUB = 'Do all of this yourself. Never spawn a subagent to do part of it, and above all never spawn a reviewer to check your work.'
 const INPUTS = (A.inputs || []).length ? `\nInput files the design names are in .dev-work/inputs/:\n${A.inputs.map(i => `- .dev-work/inputs/${i.name}: ${i.description}`).join('\n')}` : ''
-const fmt = fs => fs.map(f => `- ${f.id} (${f.severity}): ${f.text}`).join('\n')
+const wrong = f => f.consequence ? ` What goes wrong: ${f.consequence}` : ''
+const fmt = fs => fs.map(f => `- ${f.id} (${f.severity}): ${f.text}${wrong(f)}`).join('\n')
 const same = (a, b) => !!a && !!b && a === b
 
-const rulings = [], parked = [], deferred = [], carry = []
+const rulings = [], parked = [], deferred = [], declined = [], surfaced = [], carry = []
 const rule = (...lines) => rulings.push(...lines)
-const result = (status, extra = {}) => ({ status, ...extra, rulings, parked, deferred, carried: carry })
+
+// Re-plan mode: the earlier run's rulings and findings carry over, marked as such, and the branch's
+// current commit is where building resumes.
+const RP = A.replan || null
+// A re-plan resumes building from replan.head, so a missing or malformed one fails the run before the
+// planner instead of reviewing the wrong range.
+const replanHeadOk = !!RP && /^[0-9a-f]{40}$/.test(RP.head || '')
+if (RP) {
+  rule(...(RP.rulings || []).map(x => `Before the re-plan: ${x}`))
+  deferred.push(...(RP.deferred || []).map(x => `before the re-plan: ${x}`))
+  parked.push(...(RP.parked || []).map(x => `before the re-plan: ${x}`))
+  declined.push(...(RP.declined || []).map(x => `before the re-plan: ${x}`))
+  surfaced.push(...(RP.surfaced || []).map(x => `before the re-plan: ${x}`))
+}
+// A task the re-planner left without a disposition is built: it counts as new, never as kept.
+// A task counts as kept only if the earlier run's outcomes show the task it names in `from` built and reviewed
+// (done, or kept by an earlier re-plan): a kept task with no `from`, or whose `from` wasn't finished, is built.
+// Matching on `from` rather than the task's new number means renumbering can't pair it with a different task.
+// With only the saved plan there are no outcomes, so the planner's check of the code is all there is.
+// Two kept tasks can't both claim the same earlier task: only the first is accepted.
+const firstClaim = t => plan.tasks.find(x => x.disposition === 'kept' && x.from === t.from) === t
+const builtBefore = t => RP.source === 'saved-plan' || (Number.isInteger(t.from) && firstClaim(t) && (RP.tasks || []).some(o => o.task === t.from && ['done', 'kept'].includes(o.state)))
+const demoted = t => !!RP && t.disposition === 'kept' && !builtBefore(t)
+const disposition = t => (RP && DISPOSITIONS.includes(t.disposition) && !demoted(t) ? t.disposition : 'new')
+const demotedBecause = t => !Number.isInteger(t.from) ? 'it names no earlier task in from'
+  : !firstClaim(t) ? `another kept task already comes from earlier task ${t.from}`
+  : `the earlier run does not record task ${t.from} as done`
+// Only an earlier task recorded as in progress left partial commits on the branch.
+const partlyBuilt = t => Number.isInteger(t.from) && firstClaim(t) && (RP.tasks || []).some(o => o.task === t.from && o.state === 'in progress')
+const why = t => `${t.reason || 'no reason given'}${demoted(t) ? `; marked kept, but ${demotedBecause(t)}, so it is built` : ''}`
+const skipped = t => ['kept', 'dropped'].includes(disposition(t))
+
+// The run's state, kept where result() can reach it from any ending, including a review round that never plans.
+let plan = null, planText = ''
+const entries = []            // outcomes of the tasks finished so far
+let current = null            // { n, base } of the task in hand
+let openNow = null            // { prefix, items }: the findings open in whichever phase is running
+let branchHead = replanHeadOk ? RP.head : A.base
+const verdicts = []
+const outcomes = () => !plan ? [] : plan.tasks.map(t => {
+  const done = entries.find(e => e.task === t.n)
+  if (done) return done
+  if (current && current.n === t.n) return { task: t.n, title: t.title, state: 'in progress', commits: same(current.base, branchHead) ? 'none' : `${current.base.slice(0, 7)}..${branchHead.slice(0, 7)}`,
+    review: current.review ? `${current.review}; ${current.open.length} finding(s) open` : 'not reviewed yet' }
+  return { task: t.n, title: t.title, state: 'not started' }
+})
+const replanCounts = () => Object.fromEntries(DISPOSITIONS.map(d => [d, plan.tasks.filter(t => disposition(t) === d).length]))
+const result = (status, extra = {}) => {
+  // The task in hand has not passed review: the findings still open on it go into the failed result.
+  const tasks = outcomes()
+  // Whatever is open in the running phase (task, final review or review round) is parked on any failure or pause.
+  if (openNow && (status === 'failed' || status === 'paused')) parkOpen(openNow.prefix, openNow.items, status)
+  openNow = null
+  return { status, head: branchHead, plan: planText, tasks, verdicts, rulings, parked, deferred, declined, surfaced, carried: carry,
+    ...(RP && plan ? { replan_counts: replanCounts() } : {}), ...extra }
+}
+// Findings still open when a question ends the run are parked, so the pause holds them.
+const setOpen = (prefix, items) => { openNow = items && items.length ? { prefix, items } : null }
+const parkOpen = (prefix, open, how = 'paused') => open.forEach(f => parked.push(`${prefix} ${f.id}: ${f.text}${wrong(f)} (open when the run ${how})`))
+// What the breakers surfaced for a human is parked too when a later question pauses the run.
+const parkSurfaced = () => surfaced.splice(0).forEach(x => parked.push(`${x} (surfaced for a human; open when the run paused)`))
+const pause = (question, at, extra = {}) => result('paused', { at, question, ...extra })
+// A pause with no question from an agent: the run says what it could not settle.
+const plainQuestion = (question, ifGuessed) => ({ question, reason: 'expensive to reverse', why: 'the run could not settle this without guessing', if_guessed: ifGuessed, options: [], recommendation: '(none given)' })
 
 // ---------- Prompts ----------
 const implementerPrompt = ({ n, title, text, context, constraints, applicable, fix }) => `You are implementing Task ${n}: ${title}
@@ -116,7 +196,7 @@ STOP and escalate when:
 - The task involves restructuring existing code in ways the plan didn't anticipate
 - You've been reading file after file trying to understand the system without progress
 
-How to escalate: return status BLOCKED or NEEDS_CONTEXT, and say in the report specifically what you're stuck on, what you've tried, and what kind of help you need.
+How to escalate: return status BLOCKED or NEEDS_CONTEXT, and say in the report specifically what you're stuck on, what you've tried, and what kind of help you need. Before you do, leave the working tree clean: commit what is worth keeping (say in the commit message that it is unfinished) and discard the rest. Only committed work survives a pause.
 
 ## Before Reporting Back: Self-Review
 
@@ -144,9 +224,10 @@ Return in summary, under 15 lines: the commits created (short id and subject), a
 
 Use DONE_WITH_CONCERNS if you completed the work but have doubts about correctness. Use BLOCKED if you cannot complete the task. Use NEEDS_CONTEXT if you need information that wasn't provided. Never silently produce work you're unsure about.`
 
+const TRACE = 'Before you rate a finding Minor or call it harmless, and for anything the change removes, moves or recreates (a file, a directory, a worktree, saved state), trace what later reads or relies on it, in this change and in the code around it. Ask what breaks because it is gone, not only whether anything is lost.'
 const diffCommands = (from, to) => `\`git log --oneline ${from}..${to}\`, \`git diff --stat ${from}..${to}\` and \`git diff ${from}..${to}\``
 
-const taskReviewerPrompt = ({ n, title, text, constraints, report, concerns, base, head, evidenceOnly }) => `You are reviewing one task's implementation: first whether it matches its requirements, then whether it is well-built. This is a task-scoped gate, not a merge review; a broad whole-branch review happens separately after all tasks are complete.
+const taskReviewerPrompt = ({ n, title, text, constraints, report, concerns, base, head, evidenceOnly, revising }) => `You are reviewing one task's implementation: first whether it matches its requirements, then whether it is well-built. This is a task-scoped gate, not a merge review; a broad whole-branch review happens separately after all tasks are complete.
 
 ## What Was Requested
 
@@ -156,7 +237,7 @@ ${text}
 
 Global constraints from the design and plan that bind this task:
 ${constraints}
-
+${revising ? `${revising}\n\nBecause this task revises code already on the branch before Base, a requirement that code already on the branch meets is not Missing, and a listed file the diff never touches is not a Missing finding for that reason alone: put such requirements in cannot_verify, so they are checked in the code.\n` : ''}
 ## What the Implementer Claims They Built
 
 ${report}
@@ -205,11 +286,13 @@ Point at evidence: file:line for every finding.
 
 ## Calibration
 
+For every finding, ask what actually goes wrong, and for whom (a person or an agent using the software), if this ships as it is, and write the answer in consequence. A finding where something real goes wrong is Critical or Important and is fixed in this task, never Minor. Minor is only for findings where nothing goes wrong for anyone.
+
 Categorize issues by actual severity. Not everything is Critical. Important means this task cannot be trusted until it is fixed: incorrect or fragile behavior, a missed requirement, or maintainability damage you would block a merge over (verbatim duplication of a logic block, swallowed errors, tests that assert nothing). "Coverage could be broader" and polish suggestions are Minor. If the plan or task explicitly mandates something this rubric calls a defect, that is a finding: report it as Important with plan_mandated set. Acknowledge what was done well before listing issues; accurate praise helps the implementer trust the rest.
 
 ## Output
 
-spec_verdict: pass or fail. cannot_verify: the requirements you couldn't verify from the diff alone, each saying what should be checked. quality_verdict: Approved or Needs fixes. findings: each with an id T${n}-1, T${n}-2 and so on, its severity, and the text: file:line, what's wrong, why it matters, how to fix it if not obvious.`
+spec_verdict: pass or fail. cannot_verify: the requirements you couldn't verify from the diff alone, each saying what should be checked. quality_verdict: Approved or Needs fixes. findings: each with an id T${n}-1, T${n}-2 and so on, its severity, and the text: file:line, what's wrong, why it matters, how to fix it if not obvious. Each finding also has its consequence: what goes wrong, and for whom.`
 
 const reReviewPrompt = ({ task, findings, reports, fixBase, head, idPrefix }) => `You are re-reviewing a fix round. A previous review produced findings; an implementer has attempted to fix them. Your job is to verdict each finding and inspect the fix diff, nothing else.
 
@@ -246,7 +329,7 @@ The implementer re-ran the tests covering the amended code and reported the resu
 
 ## Output
 
-results: each finding's id, addressed true or false, and evidence: the file:line that shows it fixed, or the report's evidence that it should not change. A finding with no evidence stays open. new_findings: anything the fix itself broke or introduced, with severity and file:line, ids ${idPrefix}1, ${idPrefix}2 and so on. out_of_scope: issues entirely outside the fix diff.`
+results: each finding's id, addressed true or false, and evidence: the file:line that shows it fixed, or the report's evidence that it should not change. A finding with no evidence stays open. new_findings: anything the fix itself broke or introduced, with severity and file:line, ids ${idPrefix}1, ${idPrefix}2 and so on. For each one, ask what actually goes wrong, and for whom (a person or an agent using the software), if this ships as it is, and write the answer in consequence. A finding where something real goes wrong is Critical or Important, never Minor; Minor is only for findings where nothing goes wrong for anyone. out_of_scope: issues entirely outside the fix diff.`
 
 const branchReviewerPrompt = ({ planText, base, head, triage }) => `You are a Senior Code Reviewer with expertise in software architecture, design patterns, and best practices. Your job is to review completed work against its design and plan and identify issues before it merges.
 
@@ -284,10 +367,11 @@ Your review is read-only on this checkout. Do not mutate the working tree, the i
 - Architecture: sound design decisions, reasonable performance, security concerns, clean integration with surrounding code.
 - Testing: tests verify real behavior, edge cases covered, integration tests where they matter, all tests passing.
 - Production readiness: migration strategy if schema changed, backward compatibility, documentation, no obvious bugs.
+- ${TRACE}
 
 ## Declined to Judge
 
-Before your verdict, list every behavior you considered and set aside as outside the plan or design, one line each, with the reason. Nothing you set aside is dropped silently: each line goes to a human. An empty list means you set nothing aside.
+Before your verdict, list every behavior you considered and set aside as outside the plan or design, one line each, with the reason. Nothing you set aside is dropped silently: each line goes to an independent check that fixes it, defers it with a reason, or asks the user. An empty list means you set nothing aside.
 
 ## Earlier Findings to Triage
 
@@ -303,7 +387,6 @@ Categorize issues by actual severity: Critical (bugs, security issues, data loss
 summary: your assessment and its reasoning, including what's done well, and your recommendations. declined: the Declined to Judge lines. ready: Yes, No or With fixes. findings: ids F-1, F-2 and so on, each with severity, must_fix where it applies, and the text: file:line, what's wrong, why it matters, how to fix it.`
 
 // The ruler makes the calls Superpowers leaves to its controller.
-let planText = ''
 const ruler = (question, schema, label, phase) => ag(`You make the judgment calls a person would make while a plan is built task by task by implementer and reviewer agents, for the run building the design below. The design is the binding authority, the plan is its argument, and your judgment settles what neither answers. Read the code as needed; don't change it.
 
 ## The Design
@@ -318,23 +401,19 @@ ${rulings.join('\n') || '(none)'}
 
 ${question}
 
-Write every decision as "Ruling: <what you decided>; why: <why>; cost if wrong: <what it costs if wrong>". Decide; nobody will answer questions. Set stop only for an irreversible or destructive operation, a security-sensitive action, or a plan so broken that every path forward is a guess, and say why in stop_reason.`,
+Write every decision as "Ruling: <what you decided>; why: <why>; cost if wrong: <what it costs if wrong>". Decide everything that is cheap to reverse; nobody answers questions while the run is going. ${ASKING}`,
   { label, phase, schema, model: 'opus', effort: 'high' })
-
-// A stop says what kind it is, so the session doesn't have to guess from the text: 'design' needs a
-// decision about the design from the user, 'ruler' is the ruler stopping on a risk or a broken plan,
-// 'blocked' is an implementer that couldn't finish.
-const stop = (reason, at, kind = 'ruler') => result('stopped', { at, reason, kind })
 
 // Fix rounds on a set of findings: a fresh implementer per round (rounds 1-3 on the given model, 4-5 one
 // tier up), each followed by a scoped re-review. Returns the findings still open and the new head.
-const fixLoop = async ({ open, head, model, label, phase, fixPrompt, task, idPrefix, onDeferred, onRound }) => {
+const fixLoop = async ({ open, head, model, label, phase, fixPrompt, task, idPrefix, onDeferred, onRound, track = () => {} }) => {
   const reports = []
+  track(open)
   for (let round = 1; open.length && round <= CAP; round++) {
     const fixBase = head, fixModel = round <= 3 ? model : up(model)
     const fix = await ag(fixPrompt(round, reports, open), { label: `${label}-fix-r${round}`, phase, schema: IMPL, model: fixModel, effort: effort(fixModel) })
     if (!fix) return { open, head, failed: `${label} fix round ${round}` }
-    head = fix.head_sha
+    head = branchHead = fix.head_sha
     reports.push(`Fix round ${round}:\n${fix.report}`)
     const rr = await ag(reReviewPrompt({ task, findings: fmt(open), reports: reports.join('\n\n'), fixBase, head, idPrefix: `${idPrefix}R${round}-` }),
       { label: `${label}-re-review-r${round}`, phase, schema: REREVIEW, model: 'sonnet', effort: 'medium' })
@@ -344,9 +423,10 @@ const fixLoop = async ({ open, head, model, label, phase, fixPrompt, task, idPre
     rr.new_findings.filter(f => f.severity === 'Minor').map(f => `${f.id} ${f.text}`).concat(rr.out_of_scope).forEach(onDeferred)
     const before = open.length
     open = open.filter(f => !addressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
+    track(open)
     onRound(round, before - (open.length - rr.new_findings.filter(f => f.severity !== 'Minor').length), open.length, fixBase, head)
     // A fix agent that couldn't proceed ends the loop; the breaker rules on what's left.
-    if (fix.status === 'BLOCKED' || fix.status === 'NEEDS_CONTEXT') { open = open.map(f => ({ ...f, text: `${f.text} (the fix agent reported ${fix.status}: ${fix.summary})` })); break }
+    if (fix.status === 'BLOCKED' || fix.status === 'NEEDS_CONTEXT') { open = open.map(f => ({ ...f, text: `${f.text} (the fix agent reported ${fix.status}: ${fix.summary})` })); track(open); break }
   }
   return { open, head }
 }
@@ -355,7 +435,7 @@ const fixLoop = async ({ open, head, model, label, phase, fixPrompt, task, idPre
 const breaker = async (context, open, choices, label, phase) => {
   const r = await ruler(`${context} Adjudicate each open finding: park it (the reviewer is wrong or the point is contestable, or it is real but nothing downstream builds on it), or ${choices === 'carry' ? 'if it is real and load-bearing, rule on the smallest change that unblocks the dependent work; that ruling is carried into later tasks' : 'if it is real and load-bearing, rule on it; those are surfaced to the user'}.
 ${fmt(open)}`,
-    obj({ decisions: arr(obj({ id: str, decision: { type: 'string', enum: ['park', choices] }, ruling: str })), ...RULINGS }, ['decisions', 'rulings', 'stop']), label, phase)
+    obj({ decisions: arr(obj({ id: str, decision: { type: 'string', enum: ['park', choices] }, ruling: str })), ...RULINGS }, ['decisions', 'rulings']), label, phase)
   if (r) {
     const decided = new Set(r.decisions.map(d => d.id))
     open.filter(f => !decided.has(f.id)).forEach(f => r.decisions.push({ id: f.id, decision: choices === 'carry' ? 'carry' : 'surface', ruling: 'No ruling was returned for this finding; it stays open.' }))
@@ -366,11 +446,11 @@ ${fmt(open)}`,
 // ---------- The deferral check ----------
 // Everything headed for "not fixed" gets an independent look before anything is published: the reviewer
 // that labelled a finding and the session that wants to finish both have a stake in deferring it.
-const DEFERRAL = obj({ items: arr(obj({ id: str, consequence: str, verdict: { type: 'string', enum: ['resolve', 'defer', 'fixed'] }, needs_design_change: bool, reason: str })) })
+const DEFERRAL = obj({ items: arr(obj({ id: str, consequence: str, verdict: { type: 'string', enum: ['resolve', 'defer', 'fixed'] }, needs_user: bool, reason: str })), question: QUESTION }, ['items'])
 const deferralCheck = async (head, phaseName) => {
-  const items = [...deferred.map(x => ({ from: 'deferred', text: x })), ...parked.map(x => ({ from: 'parked', text: x }))].map((x, i) => ({ id: `D-${i + 1}`, ...x }))
+  const items = [...deferred.map(x => ({ from: 'deferred', text: x })), ...parked.map(x => ({ from: 'parked', text: x })), ...declined.map(x => ({ from: 'declined', text: x }))].map((x, i) => ({ id: `D-${i + 1}`, ...x }))
   if (!items.length) return { head }
-  const c = await ag(`Findings from this run are about to be left out of the pull request: deferred as minor, filed as out of scope, or parked. Each was set aside by whoever found it, and nobody has checked that call. Check it.
+  const c = await ag(`Findings from this run are about to be left out of the pull request: deferred as minor, set aside by the final review as outside the plan or design (declined), or parked. Each was set aside by whoever found it, and nobody has checked that call. Check it.
 
 ## The Design
 
@@ -381,22 +461,32 @@ ${A.design}
 ${items.map(i => `- ${i.id} (${i.from}): ${i.text}`).join('\n')}
 
 For each finding, read the code it points at and work out what actually goes wrong, and for whom, if this branch ships as it is: a person or an agent using the software, not the code's tidiness. Write that in consequence, concretely, or "nothing goes wrong" with why. Then:
-- verdict resolve when something real goes wrong: content lost or silently overwritten, the software not doing what the design says, or an agent steered into doing the wrong thing. Set needs_design_change when fixing it would contradict or go beyond the design.
+- verdict resolve when something real goes wrong: content lost or silently overwritten, the software not doing what the design says, or an agent steered into doing the wrong thing. Set needs_user when fixing it needs the user's decision: the fix would contradict the design, or the conditions below for asking hold.
 - verdict defer when nothing concrete goes wrong, and say why in reason.
 - verdict fixed when the branch has already fixed it (a later fix may have), with the evidence in reason.
-Read only.`,
+${TRACE}
+Read only.
+
+${ASKING} Ask one question covering every finding with needs_user.`,
     { label: `deferral-check`, phase: phaseName, model: 'opus', effort: 'high', schema: DEFERRAL })
   if (!c) return { head, failed: 'deferral check' }
   const byId = Object.fromEntries(items.map(i => [i.id, i.text])), fromId = Object.fromEntries(items.map(i => [i.id, i.from]))
   const decided = new Set(c.items.map(x => x.id))
   // A finding the check skipped is treated as needing resolution: it fails closed.
-  items.filter(i => !decided.has(i.id)).forEach(i => c.items.push({ id: i.id, consequence: 'not assessed', verdict: 'resolve', needs_design_change: false, reason: 'the check returned no verdict' }))
-  const design = c.items.filter(x => x.verdict === 'resolve' && x.needs_design_change)
-  if (design.length) return { head, stop: `These findings would cause real harm if shipped, and fixing them needs a design decision:\n${design.map(x => `- ${byId[x.id]}\n  What goes wrong: ${x.consequence}`).join('\n')}` }
-  const fixList = c.items.filter(x => x.verdict === 'resolve').map(x => ({ id: x.id, severity: 'Important', text: `${byId[x.id]} What goes wrong if shipped: ${x.consequence}` }))
-  deferred.length = 0; parked.length = 0
-  c.items.filter(x => x.verdict === 'defer').forEach(x => (fromId[x.id] === 'parked' ? parked : deferred).push(`${byId[x.id]} (left out because: ${x.reason})`))
-  if (!fixList.length) return { head }
+  items.filter(i => !decided.has(i.id)).forEach(i => c.items.push({ id: i.id, consequence: 'not assessed', verdict: 'resolve', needs_user: false, reason: 'the check returned no verdict' }))
+  c.items.filter(x => byId[x.id] !== undefined).forEach(x => verdicts.push({ id: x.id, from: fromId[x.id], text: byId[x.id], consequence: x.consequence, verdict: x.verdict, needs_user: !!x.needs_user, reason: x.reason }))
+  const mine = c.items.filter(x => x.verdict === 'resolve' && x.needs_user && byId[x.id] !== undefined)
+  const fixList = c.items.filter(x => x.verdict === 'resolve' && !x.needs_user && byId[x.id] !== undefined).map(x => ({ id: x.id, severity: 'Important', text: `${byId[x.id]} What goes wrong if shipped: ${x.consequence}` }))
+  const listFor = x => (fromId[x.id] === 'parked' ? parked : fromId[x.id] === 'declined' ? declined : deferred)
+  deferred.length = 0; parked.length = 0; declined.length = 0
+  c.items.filter(x => x.verdict === 'defer' && byId[x.id] !== undefined).forEach(x => listFor(x).push(`${byId[x.id]} (left out because: ${x.reason})`))
+  mine.forEach(x => listFor(x).push(`${byId[x.id]} (needs the user's decision: ${x.consequence})`))
+  const askUser = () => (asks(c) ? c.question : plainQuestion(`These findings would cause real harm if shipped, and fixing them needs your decision:\n${mine.map(x => `- ${byId[x.id]}\n  What goes wrong: ${x.consequence}`).join('\n')}`, 'the harm ships, or the fix goes beyond what the design asked for'))
+  if (!fixList.length) return mine.length ? { head, question: askUser() } : { head }
+  // Keep each finding to be fixed in its own list until the re-review closes it, so a failure in between
+  // (a throw, a null return) still hands it to the next run.
+  const pending = c.items.filter(x => x.verdict === 'resolve' && !x.needs_user && byId[x.id] !== undefined).map(x => ({ list: listFor(x), entry: `${byId[x.id]} (judged harmful by the deferral check; fix pending)` }))
+  pending.forEach(p => p.list.push(p.entry))
   const fix = await ag(`Fix these findings before this branch is published. Each was going to be left out; a check found it causes real harm. Re-run the tests that cover what you change, and commit. ${LOCAL} ${NO_SUB}
 
 ## The Design
@@ -414,19 +504,27 @@ ${fmt(fixList)}
 Return in report what changed per finding, the covering tests, the command and the output. head_sha is the full commit id from \`git rev-parse HEAD\` when you finish.`,
     { label: 'deferral-fix', phase: phaseName, schema: IMPL, model: 'sonnet', effort: 'medium' })
   if (!fix) return { head, failed: 'deferral fix' }
+  branchHead = fix.head_sha
   const rr = await ag(reReviewPrompt({ task: 'Findings that were going to be left out of the pull request, fixed because they cause real harm.', findings: fmt(fixList), reports: fix.report, fixBase: head, head: fix.head_sha, idPrefix: 'D-R-' }),
     { label: 'deferral-re-review', phase: phaseName, schema: REREVIEW, model: 'sonnet', effort: 'medium' })
   if (!rr) return { head: fix.head_sha, failed: 'deferral re-review' }
+  pending.forEach(p => { const i = p.list.indexOf(p.entry); if (i >= 0) p.list.splice(i, 1) })
   const addressed = closed(rr)
   const left = fixList.filter(f => !addressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
-  if (left.length) return { head: fix.head_sha, stop: `These findings cause real harm and are still open after a fix:\n${fmt(left)}` }
   rr.new_findings.filter(f => f.severity === 'Minor').map(f => `${f.id} ${f.text}`).concat(rr.out_of_scope).forEach(x => deferred.push(`${x} (found after the deferral check, not assessed)`))
+  left.forEach(f => deferred.push(`${f.text} (still open after the deferral fix)`))
+  if (mine.length) return { head: fix.head_sha, question: askUser(), fixed: fix.report }
+  if (left.length) return { head: fix.head_sha, question: plainQuestion(`These findings cause real harm and are still open after a fix:\n${fmt(left)}`, 'the harm ships in the pull request') }
   return { head: fix.head_sha, fixed: fix.report }
 }
 
+// The run, wrapped so that an agent call that throws (a usage limit, an expired login) still ends with a
+// failed result carrying the state above. The body keeps its indentation to keep the diff readable.
+const main = async () => {
 // ---------- Review feedback: fix rounds on a review of the PR, then the replies ----------
 if (A.feedback) {
   phase('Review feedback')
+  branchHead = A.head || A.base
   const R = A.round || 1
   let open = A.feedback.map((f, i) => ({ id: f.id || `PR${R}-${i + 1}`, severity: 'Important', text: f.text }))
   const task = `Review round ${R} on the pull request for this branch. The design:\n\n${A.design}\n\nThe pull request's description:\n\n${A.pr || '(none)'}`
@@ -454,25 +552,26 @@ Address each item, re-run the tests that cover what you change, and commit. If a
 Return in report, per item: what changed, or why nothing should change, with evidence; the covering tests, the command and the output. head_sha is the full commit id from \`git rev-parse HEAD\` when you finish, whether or not you committed.`,
     onDeferred: t => deferred.push(`round ${R} ${t}`),
     onRound: () => {},
+    track: o => setOpen(`round ${R}`, o),
   })
   if (loop.failed) return result('failed', { stage: loop.failed })
   A.feedback.forEach((f, i) => { const id = f.id || `PR${R}-${i + 1}`; if (!loop.open.find(o => o.id === id)) outcome[id] = 'addressed' })
-  const surfaced = []
   if (loop.open.length) {
     const r = await breaker(`Review round ${R} on the pull request hit its cap of ${CAP} fix rounds.`, loop.open, 'surface', 'round-breaker', 'Review feedback')
     if (!r) return result('failed', { stage: 'round breaker' })
-    if (r.stop) return stop(r.stop_reason, `round ${R}`)
+    rule(...r.rulings.map(x => `Round ${R}: ${x}`))
+    if (asks(r)) return pause(r.question, `round ${R}`, { round: R, feedback: A.feedback })
+    setOpen()
     for (const d of r.decisions) {
       const f = loop.open.find(x => x.id === d.id) || { id: d.id, text: '' }
       outcome[d.id] = `${d.decision}: ${d.ruling}`
       if (d.decision === 'park') { rule(`Round ${R}: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`round ${R} ${f.id}: ${f.text}; ruling: ${d.ruling}`) }
       else { rule(`Round ${R}: ${d.ruling}`); surfaced.push(`${f.id}: ${f.text}; ruling: ${d.ruling}`) }
     }
-    rule(...r.rulings.map(x => `Round ${R}: ${x}`))
   }
   const dc = await deferralCheck(loop.head, 'Review feedback')
   if (dc.failed) return result('failed', { stage: dc.failed })
-  if (dc.stop) return stop(dc.stop, `round ${R} deferral check`, 'design')
+  if (dc.question) { parkSurfaced(); return pause(dc.question, `round ${R} deferral check`, { round: R, feedback: A.feedback }) }
   loop.head = dc.head
   phase('Write-up')
   const w = await ag(`Write the replies to a review of a pull request, for a reader who knows only the pull request. Read what the round changed with \`git log\` and \`git diff\` on this branch as needed; change nothing.
@@ -494,15 +593,67 @@ For each item, write one reply of one or two lines, standing on its own, that st
 - "Not changed: <the reason, concrete>." when it wasn't;
 - "Partly: <what was done, and what wasn't and why>." when only some of it was;
 - "Question: <what's unclear>." when the item can't be acted on as written.
-No thanks, no apologies, and don't restate the comment; disagree with evidence, not tone. If the round changed anything the description says, return the whole updated description in pr_body; otherwise return pr_body empty.`,
+No thanks, no apologies, and don't restate the comment; disagree with evidence, not tone. If the round changed anything the description says, return the whole updated description in pr_body, without the footer at its end (one is added for you); otherwise return pr_body empty.`,
     { label: `round-${R}-write-up`, phase: 'Write-up', model: 'sonnet', effort: 'medium', schema: obj({ replies: arr(obj({ id: str, reply: str })), pr_body: str }) })
   if (!w) return result('failed', { stage: 'round write-up' })
-  return result('done', { final_head: loop.head, round: R, outcome, surfaced, replies: w.replies, pr_body: w.pr_body ? w.pr_body.trimEnd() + FOOTER : '' })
+  return result('done', { final_head: loop.head, round: R, outcome, surfaced, replies: w.replies, pr_body: w.pr_body ? withFooter(w.pr_body) : '' })
 }
 
 // ---------- Plan ----------
+if (RP && !replanHeadOk) return result('failed', { stage: 're-plan', error: `replan.head must be the branch's full 40-character commit id; got ${JSON.stringify(RP.head)}` })
+// In re-plan mode the planner also gets what the earlier run built and why the design changed.
+const listed = xs => (xs || []).map(x => `- ${x}`).join('\n') || '(none)'
+const outcomeLine = o => `- Task ${o.task}: ${o.title}: ${o.state}${o.commits ? `, commits ${o.commits}` : ''}${o.review ? `, review ${o.review}` : ''}${o.reason ? `, ${o.reason}` : ''}`
+const replanSection = !RP ? '' : `
+## Re-plan
+
+This design was planned and partly built before, on this branch. ${RP.source === 'failed'
+  ? `The earlier run failed for an operational reason, not because of the design.${RP.decision ? ` The design was changed before it, by this decision:\n\n${RP.decision}` : ' The design is unchanged.'}`
+  : `The old plan below was built for a design that turned out to be missing something. What changed:\n\n${RP.decision || '(no decision was recorded; compare the old plan with the design above)'}`}
+
+Nothing in the old plan is reused by default: every task, built or not, has to be justified again against the updated design. Plan from the updated design first, then check the old plan for what still holds. Mark every task in your plan with a disposition and its reason:
+- kept: already built and still right. It is not built again. Give it \`from\`, the old plan's task number as the outcomes below list it: only a task whose \`from\` the earlier run's outcomes show as done (or kept) is accepted as kept, and any other is built.
+- revised: built, but needs changing. It is built again, as a change to what is on the branch.
+- new: not in the old plan, or in it but not built yet. Unbuilt tasks that still hold are reused as written and marked new.
+- dropped: no longer wanted. Its code, if it is on the branch, is removed as part of a revised or new task; say which.
+
+What was built is the branch's commits from ${A.base} up to ${RP.head}: read them with ${diffCommands(A.base, RP.head)}.
+${RP.source === 'saved-plan' ? `
+No result of the earlier run exists, only its plan and the branch, so every task is unverified. Keep a task only after checking the code on the branch against it, and say in its reason what you checked.
+
+### The Old Plan
+
+${RP.plan}
+` : `
+### The Old Plan
+
+${RP.plan}
+
+### Each Task's Outcome
+
+${(RP.tasks || []).map(outcomeLine).join('\n') || '(none)'}
+
+A task shown "in progress" was being built when the run ended and has not passed review: its commits may be code a reviewer rejected, or code nobody reviewed. Its open findings, if any, are in the Parked list below, marked open when the run paused or failed. Don't keep such a task without checking its code on the branch against its requirements and those findings, and say in its reason what you checked.
+
+### Rulings Made in the Earlier Run
+
+${listed(RP.rulings)}
+
+### Findings Left Open
+
+Deferred:
+${listed(RP.deferred)}
+
+Parked:
+${listed(RP.parked)}
+
+Set aside by the final review as outside the plan (declined):
+${listed(RP.declined)}
+`}
+The branch's head: ${RP.head}
+`
 phase('Plan')
-const plan = await ag(`Write the implementation plan for the design below, for an engineer who has not seen this codebase or this design. Assume they write idiomatic code in the project's language once they know the exact interface and the exact test, and that they will make a reasonable choice wherever the plan leaves one open. What they cannot know is what you decided: which files, which names and signatures, which values from the design, which tests prove each task. Document those. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
+const planned = await ag(`Write the implementation plan for the design below, for an engineer who has not seen this codebase or this design. Assume they write idiomatic code in the project's language once they know the exact interface and the exact test, and that they will make a reasonable choice wherever the plan leaves one open. What they cannot know is what you decided: which files, which names and signatures, which values from the design, which tests prove each task. Document those. Give them the whole plan as bite-sized tasks. DRY. YAGNI. TDD. Frequent commits.
 
 Read the code as you need to, and run the repository's existing commands, but don't write or run new code.
 
@@ -567,18 +718,21 @@ ${INPUTS}
 ## The Design
 
 ${A.design}
-
+${replanSection}
 ## Return
 
-Write the full plan, overview and tasks, to .dev-work/implementation-plan.md in this checkout, for the user to read while the work runs; nothing reads it back. Then return it, as below.
+Write the full plan, overview and tasks, to .dev-work/implementation-plan.md in this checkout, for the user to read while the work runs; nothing reads it back.${RP ? ' Give each task\'s disposition and reason under its title.' : ''} Then return it, as below.
 
 - overview: everything in the plan before the first task (title, Goal, Architecture, Tech Stack, Global Constraints, Review Focus, file structure).
 - global_constraints and review_focus: those two sections' text.
 - assumptions and follow_ups: one entry each.
-- tasks: in order, each with its number, its title and its full text, exactly as the plan has it.`,
-  { label: 'plan', phase: 'Plan', model: 'opus', effort: 'medium', schema: PLAN })
-if (!plan) return result('failed', { stage: 'plan' })
-planText = `${plan.overview}\n\n${plan.tasks.map(t => `### Task ${t.n}: ${t.title}\n\n${t.text}`).join('\n\n')}`
+- tasks: in order, each with its number, its title and its full text, exactly as the plan has it${RP ? ', its disposition (kept, revised, new or dropped), its reason, and for a kept or revised task \`from\`, the old plan task number it comes from' : ''}.`,
+  { label: 'plan', phase: 'Plan', model: 'opus', effort: 'medium', schema: RP ? REPLAN : PLAN })
+if (!planned) return result('failed', { stage: 'plan' })
+plan = planned
+planText = `${plan.overview}\n\n${plan.tasks.map(t => `### Task ${t.n}: ${t.title}${RP ? ` (${disposition(t)}: ${why(t)})` : ''}\n\n${t.text}`).join('\n\n')}`
+// Kept and dropped tasks are recorded now, so a run that pauses or fails before reaching them still reports them.
+plan.tasks.filter(skipped).forEach(t => entries.push({ task: t.n, title: t.title, state: disposition(t), reason: t.reason || '' }))
 
 const pre = await ruler(`Before Task 1 is dispatched, scan the plan above once for conflicts, writing down what you checked as you check it:
 - tasks that contradict each other or the plan's Global Constraints
@@ -586,23 +740,35 @@ const pre = await ruler(`Before Task 1 is dispatched, scan the plan above once f
 
 The scan's output is a table, not a verdict: one row for every pair of tasks that share a file or an interface (the two tasks, what one produces against what the other consumes, and what you found), and one row for every task (whether its own text agrees with itself: the tests it specifies against the code it specifies, the files it creates against the files it later touches). "The scan is clean" without those rows is not a scan you ran. Rule on every conflict the scan surfaces, against the plan text that mandates it.
 
-Then choose each task's implementer model, using the least powerful model that can handle it: haiku for mechanical tasks (isolated functions, clear specs, 1-2 files, or the task's text contains the complete code), sonnet for integration and judgment tasks (multi-file coordination, pattern matching, debugging), opus for architecture and design tasks. Return only the rulings you made now.`,
-  obj({ scan: arr(str), task_models: arr(obj({ task: int, model: { type: 'string', enum: TIERS } })), ...RULINGS }, ['scan', 'task_models', 'rulings', 'stop']),
+Then choose each task's implementer model, using the least powerful model that can handle it: haiku for mechanical tasks (isolated functions, clear specs, 1-2 files, or the task's text contains the complete code), sonnet for integration and judgment tasks (multi-file coordination, pattern matching, debugging), opus for architecture and design tasks. Return only the rulings you made now.${RP ? `
+
+This plan re-plans a branch an earlier run built part of. The rulings from before the re-plan (those starting "Before the re-plan:") hold unless the updated design contradicts them. List each one it contradicts in withdrawn, copied verbatim; it is no longer carried.` : ''}`,
+  obj({ scan: arr(str), task_models: arr(obj({ task: int, model: { type: 'string', enum: TIERS } })), withdrawn: arr(str), ...RULINGS }, ['scan', 'task_models', 'rulings']),
   'pre-flight', 'Plan')
 if (!pre) return result('failed', { stage: 'pre-flight' })
+// Withdrawn rulings are removed in place (result() holds the same array), and only from those carried
+// over, before this pre-flight's own rulings are added.
+const withdrawn = (pre.withdrawn || []).filter(w => typeof w === 'string' && w.trim()).map(w => w.trim())
+const CARRIED = 'Before the re-plan: '
+const bare = x => (x.startsWith(CARRIED) ? x.slice(CARRIED.length) : x).trim()
+const withdrawnBare = withdrawn.map(bare)
+for (let i = rulings.length - 1; i >= 0; i--) if (rulings[i].startsWith(CARRIED) && withdrawnBare.includes(bare(rulings[i]))) rulings.splice(i, 1)
 rule(...pre.rulings.map(x => `Pre-flight: ${x}`))
-if (pre.stop) return stop(pre.stop_reason, 'pre-flight')
+if (asks(pre)) return pause(pre.question, 'pre-flight')
 const constraints = plan.global_constraints || '(none)'
 const modelFor = n => (pre.task_models.find(t => t.task === n) || {}).model || 'sonnet'
 
 // ---------- Tasks ----------
 phase('Tasks')
-let lastHead = A.base
-const tasks = []
+// In re-plan mode building resumes from the branch's current commit; the final review still covers it all.
+let lastHead = RP ? RP.head : A.base
 for (const t of plan.tasks) {
-  const n = t.n, base = lastHead, entry = { task: n, title: t.title, rounds: 0, parked: 0 }
+  if (skipped(t)) continue
+  const n = t.n, base = lastHead, entry = { task: n, title: t.title, state: 'done', rounds: 0, parked: 0 }
+  current = { n, base, review: '', open: [] }
   let model = modelFor(n)
-  const context = `Task ${n} of ${plan.tasks.length}. The plan's overview:\n\n${plan.overview}`
+  const revising = disposition(t) === 'revised' || (demoted(t) && partlyBuilt(t)) ? `\n\nThis task was at least partly built in an earlier run and is being revised (${why(t)}): change what is on the branch rather than building it again.` : ''
+  const context = `Task ${n} of ${plan.tasks.length}. The plan's overview:\n\n${plan.overview}${revising}`
   const applicable = () => rulings.slice()
 
   // 1-2. Dispatch the implementer and handle its status
@@ -611,13 +777,20 @@ for (const t of plan.tasks) {
     impl = await ag(implementerPrompt({ n, title: t.title, text: t.text, context, constraints, applicable: applicable(), fix: answer ? `An earlier attempt at this task reported back, and the controller answered:\n${answer}` : '' }),
       { label: `implement-${n}${attempt > 1 ? `-a${attempt}` : ''}`, phase: 'Tasks', schema: IMPL, model, effort: effort(model) })
     if (!impl) return result('failed', { stage: `implement ${n}` })
+    branchHead = impl.head_sha
     if (impl.status === 'DONE' || impl.status === 'DONE_WITH_CONCERNS') break
-    if (attempt === 3) return stop(`task ${n}'s implementer still ${impl.status} after 3 dispatches: ${impl.summary}`, `task ${n}`, 'blocked')
+    if (attempt === 3) {
+      const q = await ruler(`Task ${n}'s implementer (${model}) is still ${impl.status} after 3 dispatches, and there will be no further dispatch.\nIts summary: ${impl.summary}\nIts report:\n${impl.report}\nPut to the user the question that would let the task be built.`,
+        obj({ ...RULINGS }, ['rulings', 'question']), `ask-${n}`, 'Tasks')
+      if (!q) return result('failed', { stage: `ruling on task ${n}` })
+      rule(...(q.rulings || []).map(x => `Task ${n}: ${x}`))
+      return pause(asks(q) ? q.question : plainQuestion(`Task ${n} could not be built: the implementer is still ${impl.status} after 3 dispatches: ${impl.summary}`, 'the task stays unbuilt and the tasks after it may build on a guess'), `task ${n}`)
+    }
     const r = await ruler(`Task ${n}'s implementer (${model}) reported ${impl.status}.\nIts summary: ${impl.summary}\nIts report:\n${impl.report}\nGive the missing context or your correction of the plan as answer, and set escalate if the task needs more reasoning than ${model} has.`,
-      obj({ answer: str, escalate: bool, ...RULINGS }, ['answer', 'escalate', 'rulings', 'stop']), `rule-${n}-a${attempt}`, 'Tasks')
+      obj({ answer: str, escalate: bool, ...RULINGS }, ['answer', 'escalate', 'rulings']), `rule-${n}-a${attempt}`, 'Tasks')
     if (!r) return result('failed', { stage: `ruling on task ${n}` })
-    if (r.stop) return stop(r.stop_reason, `task ${n}`)
     rule(...r.rulings.map(x => `Task ${n}: ${x}`))
+    if (asks(r)) return pause(r.question, `task ${n}`)
     if (r.escalate) model = up(model)
     answer = r.answer
   }
@@ -626,12 +799,13 @@ for (const t of plan.tasks) {
 
   // 3. Review the task
   const reviewer = atLeast(model, 'sonnet')
-  const review = await ag(taskReviewerPrompt({ n, title: t.title, text: t.text, constraints, report: `${impl.report}\n\nFailing run before implementing (as reported):\n${impl.red}`, concerns: impl.status === 'DONE_WITH_CONCERNS' ? impl.summary : '', base, head, evidenceOnly }),
+  const review = await ag(taskReviewerPrompt({ n, title: t.title, text: t.text, constraints, revising, report: `${impl.report}\n\nFailing run before implementing (as reported):\n${impl.red}`, concerns: impl.status === 'DONE_WITH_CONCERNS' ? impl.summary : '', base, head, evidenceOnly }),
     { label: `review-${n}`, phase: 'Tasks', schema: REVIEW, model: reviewer, effort: effort(reviewer) })
   if (!review) return result('failed', { stage: `review ${n}` })
   entry.review = `${review.spec_verdict}, ${review.quality_verdict}`
   let open = review.findings.filter(f => f.severity !== 'Minor')
-  review.findings.filter(f => f.severity === 'Minor').forEach(f => deferred.push(`T${n} ${f.id}: ${f.text}`))
+  current.review = entry.review; current.open = open; setOpen(`T${n}`, open)
+  review.findings.filter(f => f.severity === 'Minor').forEach(f => deferred.push(`T${n} ${f.id}: ${f.text}${wrong(f)}`))
 
   // What the reviewer couldn't verify is checked against the code; findings the plan mandates are ruled on
   if (review.cannot_verify.length) {
@@ -639,15 +813,17 @@ for (const t of plan.tasks) {
       { label: `verify-${n}`, phase: 'Tasks', model: 'sonnet', effort: 'medium', schema: obj({ gaps: arr(str) }) })
     if (!c) return result('failed', { stage: `verify ${n}` })
     open = open.concat(c.gaps.map((g, i) => ({ id: `T${n}-G${i + 1}`, severity: 'Important', text: g })))
+    current.open = open; setOpen(`T${n}`, open)
   }
   const mandated = open.filter(f => f.plan_mandated)
   if (mandated.length) {
     const r = await ruler(`Task ${n} (commits ${base}..${head}). Rule on each plan-mandated finding against the plan text that mandates it; return in keep the ids that should go to the fix loop.\n${fmt(mandated)}`,
-      obj({ keep: arr(str), ...RULINGS }, ['keep', 'rulings', 'stop']), `resolve-${n}`, 'Tasks')
+      obj({ keep: arr(str), ...RULINGS }, ['keep', 'rulings']), `resolve-${n}`, 'Tasks')
     if (!r) return result('failed', { stage: `resolve ${n}` })
-    if (r.stop) return stop(r.stop_reason, `task ${n}`)
     rule(...r.rulings.map(x => `Task ${n}: ${x}`))
+    if (asks(r)) return pause(r.question, `task ${n}`)
     open = open.filter(f => !f.plan_mandated || r.keep.includes(f.id))
+    current.open = open; setOpen(`T${n}`, open)
   }
 
   // 4. The fix loop
@@ -661,11 +837,12 @@ for (const t of plan.tasks) {
 Original report:
 ${impl.report}
 ${reports.length ? `\n${reports.join('\n\n')}\n` : ''}
-Fix these findings, re-run the tests that cover the amended code, and commit. Your report is the fix report: what you changed per finding, the covering tests, the command and the output.
+Fix these findings, re-run the tests that cover the amended code, and commit. Your report is the fix report: what you changed per finding, the covering tests, the command and the output. If a finding can't be fixed without changing the design, don't work around it: return BLOCKED and say in your report which design decision it needs.
 ${fmt(items)}`,
     }),
     onDeferred: x => deferred.push(`T${n} ${x}`),
     onRound: round => { entry.rounds = round },
+    track: o => { current.open = o; setOpen(`T${n}`, o) },
   })
   if (loop.failed) return result('failed', { stage: loop.failed })
   head = loop.head || head
@@ -675,30 +852,33 @@ ${fmt(items)}`,
   if (open.length) {
     const r = await breaker(`Task ${n}'s fix loop hit its cap of ${CAP} rounds (commits ${base}..${head}).`, open, 'carry', `breaker-${n}`, 'Tasks')
     if (!r) return result('failed', { stage: `breaker ${n}` })
-    if (r.stop) return stop(r.stop_reason, `task ${n}`)
+    rule(...r.rulings.map(x => `Task ${n}: ${x}`))
+    if (asks(r)) return pause(r.question, `task ${n}`)
+    setOpen()
     for (const d of r.decisions) {
       const f = open.find(x => x.id === d.id) || { id: d.id, text: '' }
       if (d.decision === 'park') { rule(`Task ${n}: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`T${n} ${f.id}: ${f.text}; ruling: ${d.ruling}`) }
       else { rule(`Task ${n}: ${d.ruling}`); carry.push(`Task ${n}: ${d.ruling}`) }
     }
-    rule(...r.rulings.map(x => `Task ${n}: ${x}`))
     entry.parked = open.length
   }
   entry.commits = same(head, base) ? 'none, evidence reviewed' : `${base.slice(0, 7)}..${head.slice(0, 7)}`
   entry.tests = impl.summary
   lastHead = head
-  tasks.push(entry)
+  entries.push(entry)
+  current = null; setOpen()
   log(`Task ${n}: ${entry.rounds} fix round(s), ${entry.parked} parked`)
 }
 
 // ---------- Final review ----------
 phase('Final review')
 const final = await ag(branchReviewerPrompt({ planText, base: A.base, head: lastHead, triage: [...deferred, ...parked].map(x => `- ${x}`).join('\n') }),
-  { label: 'final-review', phase: 'Final review', model: 'opus', effort: 'high', schema: obj({ summary: str, declined: arr(str), ready: { type: 'string', enum: ['Yes', 'No', 'With fixes'] }, findings: arr(obj({ id: str, severity: SEV, must_fix: bool, text: str }, ['id', 'severity', 'text'])) }) })
+  { label: 'final-review', phase: 'Final review', model: 'opus', effort: 'xhigh', schema: obj({ summary: str, declined: arr(str), ready: { type: 'string', enum: ['Yes', 'No', 'With fixes'] }, findings: arr(obj({ id: str, severity: SEV, must_fix: bool, text: str }, ['id', 'severity', 'text'])) }) })
 if (!final) return result('failed', { stage: 'final review' })
+declined.push(...(final.declined || []))
 let finalOpen = final.findings.filter(f => f.severity !== 'Minor' || f.must_fix)
 final.findings.filter(f => f.severity === 'Minor' && !f.must_fix).forEach(f => deferred.push(`final ${f.id}: ${f.text}`))
-const surfaced = []
+setOpen('final', finalOpen)
 let finalFix = ''
 if (finalOpen.length) {
   const fixBase = lastHead
@@ -719,7 +899,7 @@ ${fmt(finalOpen)}
 Return in report what changed per finding, the covering tests, the command and the output. head_sha is the full commit id from \`git rev-parse HEAD\` when you finish.`,
     { label: 'final-fix', phase: 'Final review', schema: IMPL, model: 'sonnet', effort: 'medium' })
   if (!fix) return result('failed', { stage: 'final fix' })
-  lastHead = fix.head_sha
+  lastHead = branchHead = fix.head_sha
   finalFix = fix.report
   const rr = await ag(reReviewPrompt({ task: 'The whole branch, reviewed against the design and plan.', findings: fmt(finalOpen), reports: fix.report, fixBase, head: fix.head_sha, idPrefix: 'F-R-' }),
     { label: 'final-re-review', phase: 'Final review', schema: REREVIEW, model: 'sonnet', effort: 'medium' })
@@ -727,22 +907,24 @@ Return in report what changed per finding, the covering tests, the command and t
   const addressed = closed(rr)
   rr.new_findings.filter(f => f.severity === 'Minor').map(f => `${f.id} ${f.text}`).concat(rr.out_of_scope).forEach(x => deferred.push(`final ${x}`))
   finalOpen = finalOpen.filter(f => !addressed.has(f.id)).concat(rr.new_findings.filter(f => f.severity !== 'Minor'))
+  setOpen('final', finalOpen)
   if (finalOpen.length) {
     const r = await breaker(`The final whole-branch review's single fix wave left these findings open. There is no second wave.`, finalOpen, 'surface', 'final-breaker', 'Final review')
     if (!r) return result('failed', { stage: 'final breaker' })
-    if (r.stop) return stop(r.stop_reason, 'final')
+    rule(...r.rulings.map(x => `Final: ${x}`))
+    if (asks(r)) return pause(r.question, 'final')
+    setOpen()
     for (const d of r.decisions) {
       const f = finalOpen.find(x => x.id === d.id) || { id: d.id, text: '' }
       if (d.decision === 'park') { rule(`Final: parked: ${f.id} ${f.text}; ruling: ${d.ruling}`); parked.push(`final ${f.id}: ${f.text}; ruling: ${d.ruling}`) }
       else { rule(`Final: ${d.ruling}`); surfaced.push(`${f.id}: ${f.text}; ruling: ${d.ruling}`) }
     }
-    rule(...r.rulings.map(x => `Final: ${x}`))
   }
 }
 
 const dc = await deferralCheck(lastHead, 'Final review')
 if (dc.failed) return result('failed', { stage: dc.failed })
-if (dc.stop) return stop(dc.stop, 'deferral check', 'design')
+if (dc.question) { parkSurfaced(); return pause(dc.question, 'deferral check') }
 lastHead = dc.head
 if (dc.fixed) finalFix = `${finalFix}\n\nFixed after the deferral check:\n${dc.fixed}`
 
@@ -769,9 +951,11 @@ Follow-ups:
 ${plan.follow_ups.map(x => `- ${x}`).join('\n') || '(none)'}
 
 ## The Run
-
+${RP && RP.decision ? `\nRe-planned after: ${RP.decision}\n` : ''}
 Tasks:
-${tasks.map(e => `- Task ${e.task}: ${e.title}. Commits ${e.commits}; review ${e.review}; ${e.rounds} fix round(s); ${e.parked} parked. Tests: ${e.tests}`).join('\n')}
+${outcomes().map(e => e.state === 'kept' ? `- Task ${e.task}: ${e.title}. Kept from the earlier run: ${e.reason}`
+    : e.state === 'dropped' ? `- Task ${e.task}: ${e.title}. Dropped: ${e.reason}`
+      : `- Task ${e.task}: ${e.title}. Commits ${e.commits}; review ${e.review}; ${e.rounds} fix round(s); ${e.parked} parked. Tests: ${e.tests}`).join('\n')}
 
 Rulings:
 ${rulings.join('\n') || '(none)'}
@@ -784,8 +968,8 @@ ${deferred.join('\n') || '(none)'}
 
 Final review: ${final.summary}
 
-Set aside by the final review as outside the plan (for a human to judge):
-${(final.declined || []).join('\n') || '(none)'}
+Set aside by the final review as outside the plan, after the deferral check (for a human to judge):
+${declined.join('\n') || '(none)'}
 ${finalFix ? `\nFinal fix:\n${finalFix}\n` : ''}
 Surfaced for a human:
 ${surfaced.join('\n') || '(none)'}
@@ -801,4 +985,6 @@ Don't add a footer or a note about how this was made; one is added for you. Retu
   { label: 'write-up', phase: 'Write-up', model: 'sonnet', effort: 'medium', schema: obj({ title: str, body: str }) })
 if (!w) return result('failed', { stage: 'write-up' })
 
-return result('done', { final_head: lastHead, plan: planText, scan: pre.scan, declined: final.declined, assumptions: plan.assumptions, follow_ups: plan.follow_ups, final_review: final.summary, tasks, surfaced, pr_title: w.title, pr_body: w.body.trimEnd() + FOOTER })
+return result('done', { final_head: lastHead, scan: pre.scan, assumptions: plan.assumptions, follow_ups: plan.follow_ups, final_review: final.summary, surfaced, pr_title: w.title, pr_body: withFooter(w.body) })
+}
+try { return await main() } catch (e) { return result('failed', { stage: lastLabel, error: String((e && e.message) || e) }) }
