@@ -250,7 +250,9 @@ const LENS_MODEL = { correctness: 'opus', 'data-integrity': 'opus', intent: 'opu
 // ---- Posting rules ----
 
 // A finding on a file the PR didn't change can't be an inline comment there: post it file-level on the first changed
-// file, keeping where it is in the headline.
+// file, keeping where it is in the headline. The input has no diff hunks, so a line in a changed file but outside its
+// hunks still goes out inline and GitHub rejects it at submit: /dev-work:review's posting step reposts such a comment
+// file-level (line 0) on the same path.
 const anchor = f => {
   const line = Number.isInteger(f.line) && f.line > 0 ? f.line : 0
   const location = isStr(f.location) && f.location.trim() ? f.location : line ? `${f.path}:${line}` : `${f.path}`
