@@ -326,8 +326,16 @@ test('the re-planner gets the old plan, the outcomes, the rulings, the decision 
 
 test('a ruling the pre-flight withdraws is not carried', async () => {
   const { prompt } = await run(replanArgs, { plan: replanned,
-    'pre-flight': () => ({ scan: [], task_models: [], rulings: [], withdrawn: ['Ruling: OLD'] }) })
+    'pre-flight': () => ({ scan: [], task_models: [], rulings: [], withdrawn: ['Ruling: OLD; why: w; cost if wrong: c'] }) })
   assert.doesNotMatch(prompt('implement-2'), /Ruling: OLD/)
+})
+
+test('a withdrawn ruling is matched whole, not as a substring of other carried rulings', async () => {
+  const args = { ...replanArgs, replan: { ...replanArgs.replan, rulings: ['Ruling: OLD; why: w; cost if wrong: c', 'Ruling: OLD; why: other; cost if wrong: c'] } }
+  const { prompt } = await run(args, { plan: replanned,
+    'pre-flight': () => ({ scan: [], task_models: [], rulings: [], withdrawn: ['Ruling: OLD', 'Before the re-plan: Ruling: OLD; why: w; cost if wrong: c'] }) })
+  assert.match(prompt('implement-2'), /why: other/)
+  assert.doesNotMatch(prompt('implement-2'), /why: w;/)
 })
 
 test('a re-plan after a failed re-plan still shows the planner the decision that caused it', async () => {
@@ -547,6 +555,8 @@ test('a task marked kept that the earlier run did not finish is built', async ()
   const inProgress = { ...replanArgs, replan: { ...replanArgs.replan, tasks: [{ task: 1, title: 'one', state: 'in progress' }] } }
   const r2 = await run(inProgress, { plan: keptPlan([{ n: 1, title: 'one', text: 'T', disposition: 'kept', reason: 'r', from: 1 }]) })
   assert.ok(r2.calls.some(c => c.label === 'implement-1'))
+  assert.match(r2.prompt('implement-1'), /change what is on the branch/)
+  assert.match(r2.prompt('review-1'), /being revised/)
 })
 
 test('a kept task is matched to the earlier run by from, not by its new number', async () => {

@@ -747,7 +747,10 @@ if (!pre) return result('failed', { stage: 'pre-flight' })
 // Withdrawn rulings are removed in place (result() holds the same array), and only from those carried
 // over, before this pre-flight's own rulings are added.
 const withdrawn = (pre.withdrawn || []).filter(w => typeof w === 'string' && w.trim()).map(w => w.trim())
-for (let i = rulings.length - 1; i >= 0; i--) if (rulings[i].startsWith('Before the re-plan: ') && withdrawn.some(w => rulings[i].includes(w))) rulings.splice(i, 1)
+const CARRIED = 'Before the re-plan: '
+const bare = x => (x.startsWith(CARRIED) ? x.slice(CARRIED.length) : x).trim()
+const withdrawnBare = withdrawn.map(bare)
+for (let i = rulings.length - 1; i >= 0; i--) if (rulings[i].startsWith(CARRIED) && withdrawnBare.includes(bare(rulings[i]))) rulings.splice(i, 1)
 rule(...pre.rulings.map(x => `Pre-flight: ${x}`))
 if (asks(pre)) return pause(pre.question, 'pre-flight')
 const constraints = plan.global_constraints || '(none)'
@@ -762,7 +765,7 @@ for (const t of plan.tasks) {
   const n = t.n, base = lastHead, entry = { task: n, title: t.title, state: 'done', rounds: 0, parked: 0 }
   current = { n, base, review: '', open: [] }
   let model = modelFor(n)
-  const revising = disposition(t) === 'revised' ? `\n\nThis task was built in an earlier run and is being revised (${t.reason || 'no reason given'}): change what is on the branch rather than building it again.` : ''
+  const revising = disposition(t) === 'revised' || demoted(t) ? `\n\nThis task was at least partly built in an earlier run and is being revised (${why(t)}): change what is on the branch rather than building it again.` : ''
   const context = `Task ${n} of ${plan.tasks.length}. The plan's overview:\n\n${plan.overview}${revising}`
   const applicable = () => rulings.slice()
 
