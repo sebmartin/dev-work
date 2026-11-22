@@ -37,7 +37,13 @@ const EVIDENCE_RE = /[\w./-]+:\d+/
 const SETTLED = '**✅ Settled:**', STILL = '**Still open:**', PUSHBACK = '**Pushback:**', NEEDS = '**Needs a person:**'
 // In every later-round prompt: when the fixes hold, a round with nothing new is the right outcome.
 const NO_NEW = 'A round with no new findings is the expected result when the fixes hold: say so and stop.'
+// On a 🔴 or 🟠 a round without a full pass found outside its fixes. Read back from a thread's first comment, it keeps
+// that thread from blocking the done rule in later rounds too.
+const NONBLOCKING = "_Found outside this round's fixes, so it doesn't hold up the review._"
 const FOOTER ='Reviewed by agents with [dev-work](https://github.com/sebmartin/dev-work).'
+// Full passes per PR, round 1 included; reviewer rounds since the later of the user's latest reply in a reviewer
+// thread and the latest full pass.
+const FULL_PASS_LIMIT = 2, ROUND_LIMIT = 3
 
 // Every object is closed and every property required, so Codex's --output-schema (strict) can take the same schemas.
 const str = { type: 'string' }, bool = { type: 'boolean' }, int = { type: 'integer' }
@@ -49,6 +55,7 @@ const LENSES = ['correctness', 'security', 'data-integrity', 'quality', 'testing
 const TAGS = ['persistence', 'concurrency', 'auth', 'untrusted_input', 'tests_missing', 'config_only']
 const FINDING = obj({ file: str, line: int, headline: str, severity: SEVERITY, lens: str, mechanism: str, failure_scenario: str, fix: str })
 const FINDINGS = obj({ findings: arr(FINDING) })
+const FIX_FINDINGS = obj({ findings: arr({ ...FINDING, properties: { ...FINDING.properties, in_fixes: bool }, required: [...FINDING.required, 'in_fixes'] }) })
 const CODEX_SCHEMA = FINDINGS // written into the runner's prompt as JSON text for --output-schema
 const CODEX_RUN = obj({ exit_code: int, output: str, stderr: str })
 const SCOUT = obj({ surfaces: arr(obj({ file: str, tags: arr(oneOf(TAGS)) })), lenses: arr(oneOf(LENSES)), full_pass: bool, reason: str })
@@ -91,6 +98,21 @@ const inputsOk = a => {
   } catch { return false }
 }
 const hasDesign = () => args.design.trim() !== ''
+const laterRound = () => S.round > 1
+// Where the change since the last round starts: the last round's review commit, or the PR's base when that commit
+// couldn't be fetched (a force-push), so the whole PR diff is the change.
+const since = () => (S.last && S.last.commit && args.since_fetched ? S.last.commit : args.pr.base)
+// Reviewer rounds since the later of the user's latest reply in a reviewer thread and the latest full pass, this round
+// included. A full pass restarts the count.
+const roundsSince = () => {
+  if (S.fullPass) return 1
+  const fulls = S.rounds.filter(r => r.full).map(r => r.at)
+  const anchor = Math.max(S.userReplyAt === null ? -Infinity : S.userReplyAt, ...fulls, -Infinity)
+  return 1 + S.rounds.filter(r => r.at >= anchor).length
+}
+const sinceText = () => `## The change since the last round
+
+\`git diff ${since()} ${args.pr.head}\` is what changed since round ${S.last.round}. After a rebase this can include the base branch's own changes: review only what is part of the PR's own diff (\`git diff ${args.pr.base} ${args.pr.head}\`).`
 
 // ---- Prompts ----
 
@@ -160,7 +182,17 @@ Pick the lenses this change warrants:
 - testing: any tests_missing surface, or tests the change adds or alters.
 - conventions: changes the repository's CLAUDE.md or AGENTS.md files have rules about.${hasDesign() ? '\n- intent: always runs here, because there is a design.' : ''}
 
-Return surfaces (every changed file with its tags), lenses, full_pass false and reason '' (this is the first review, which is a full one).`
+${laterRound() ? `${sinceText()}
+
+## Whether this round needs a full review
+
+Earlier rounds reviewed this pull request, and the comment threads above are what they found. This round normally reviews only the change since the last round. Decide whether that change needs a new full review of the whole pull request instead: full_pass true when it does something the earlier review never looked at, meaning it touches a risk surface the pull request didn't have before, it rewrites a large part of what was reviewed, or it adds substantial new behaviour beyond fixing the findings. Fixes to the findings, however many, are not a reason. When full_pass is true, reason says why in a short phrase a stranger can read in the review's summary (for example "adds a sync engine"); otherwise reason is ''.
+
+Map the surfaces and pick the lenses for the whole pull request either way, for the full review you might call for.
+
+${NO_NEW}
+
+Return surfaces (every changed file in the pull request with its tags), lenses, full_pass and reason.` : `Return surfaces (every changed file with its tags), lenses, full_pass false and reason '' (this is the first review, which is a full one).`}`
 
 const LENS_TEXT = {
   correctness: `Lens: correctness. Hunt for real bugs that will actually be hit: wrong logic, unhandled or swallowed errors, edge cases (empty input, null, NaN, zero, overflow, off-by-one), race conditions and concurrency, resource leaks, incorrect library or API usage, wrong types crossing a boundary. Trace the changed code paths, and trace across files: for a changed function, find its callers and check whether a changed return shape or type, a new failure mode or a new precondition breaks a consumer (an optional helper that now returns undefined, null or [] on a path a required caller assumes always succeeds is a classic). For behaviour the diff removed, name the invariant it used to enforce and find where the new code re-establishes it; if nowhere, that's a finding. Skip stylistic nits and anything a typechecker or linter would catch.`,
@@ -192,15 +224,55 @@ findings: each finding with
 - failure_scenario: a concrete, specific sequence where this bites in practice, required for blocker and robustness. Not "this could fail" but which input or state leads to which wrong result.
 - fix: the concrete change, pointing at the pattern already in the repository when there is one.
 
-If you find nothing real through this lens, return an empty list. Don't manufacture nitpicks.`
+If you find nothing real through this lens, return an empty list. Don't manufacture nitpicks.${laterRound() ? `\n\n${NO_NEW}` : ''}`
 
-const rawText = r => `- ${r.id} (${r.severity}, ${r.source}): ${r.headline} at ${r.file}:${r.line}, lens ${r.lens}. Mechanism: ${r.mechanism} Failure scenario: ${r.failure_scenario || '(none given)'} Fix: ${r.fix}`
+// A later round without a full pass: one reviewer over the change since the last round and what it could break.
+const fixReviewPrompt = () => `${GOAL}
 
-const consolidatorPrompt = surfaces => `${GOAL}
-
-You are the consolidator of this review. Several reviewers each looked at the pull request through one lens and returned raw, unfiltered findings, listed below by id. You turn them into this round's comments: deduped, verified against the code, with their final severity, each written so a stranger can act on it. What you write in a finding is posted as it is.
+You are the fix reviewer for a later round of this review. Earlier rounds reviewed the whole pull request and posted their findings in the comment threads below; the author has since changed it, mostly to answer them. Another reviewer checks whether each finding's fix holds. You review the change since the last round itself: whether it is correct, and what it could break elsewhere in the pull request (a caller of changed code, an invariant the earlier code kept, a test or doc the change left stale). Read the code around each change, not just the diff hunk. Prefer fixes that match a pattern already used elsewhere in this repository, and cite the file and line of that pattern.
 
 ${prInfo()}
+
+${sinceText()}
+
+## What to return
+
+findings: each finding with
+- file: the repository-relative path, and line: the line it is about, preferably the changed line that causes it (0 for the whole file).
+- headline: one line naming the problem.
+- severity: your first guess at blocker, robustness or cleanup; it is finalised later. ${SEVERITIES}
+- lens: \`fix-review\`.
+- mechanism: why it's wrong, the root cause with evidence. Cite the lines and files that prove it.
+- failure_scenario: a concrete, specific sequence where this bites in practice, required for blocker and robustness. Not "this could fail" but which input or state leads to which wrong result.
+- fix: the concrete change, pointing at the pattern already in the repository when there is one.
+- in_fixes: true when the problem is in the change since the last round, false when it is in code that change didn't touch.
+
+Don't raise again what a thread above already raises. Don't manufacture nitpicks.
+
+${NO_NEW}`
+
+const rawText = r => `- ${r.id} (${r.severity}, ${r.source}): ${r.headline} at ${r.file}:${r.line}, lens ${r.lens}${typeof r.in_fixes === 'boolean' ? `, ${r.in_fixes ? 'in' : 'outside'} the change since the last round` : ''}. Mechanism: ${r.mechanism} Failure scenario: ${r.failure_scenario || '(none given)'} Fix: ${r.fix}`
+
+// The consolidator sees the threads and this round's raw findings, nothing from earlier rounds' runs: a finding an
+// earlier round didn't post exists nowhere for it to raise again.
+const consolidatorPrompt = (surfaces, { fullPass }) => {
+  const fixRound = !fullPass
+  const work = [
+    `Dedupe across sources by (file, line, root issue). The same root issue often comes from several ${fixRound ? 'sources' : 'lenses'}. Merge them into one finding with the sharpest framing; list every source id merged into it in \`sources\` and every lens that raised it in \`lenses\`. Several sources raising it independently is a confidence signal; verify a finding with one source harder before it survives.`,
+    `Verify every finding against the code, never on the source's word. Re-read the cited lines; if a source says a function returns X, open that function. Read-only inspection (grep, git blame, git log -L) is fine. Give each finding a verdict: CONFIRMED when you can name the triggering input or state and the wrong result, and quote the line; PLAUSIBLE when the mechanism is real but the trigger depends on runtime, config or timing you can't pin down from the repository. Refute a finding only when the code proves it wrong (factually wrong, provably impossible, or already guarded in this change): leave it out of \`findings\` and put its source ids in \`refuted\` with the file:line that proves it. Never refute a real but uncertain finding for being speculative; keep it as PLAUSIBLE.`,
+    `Dedupe against the existing comment threads${laterRound() && fullPass ? ": every thread above, this review's own earlier findings included, open or resolved. This is a full review run again, so it will find much of what earlier rounds already posted" : ''}. When a thread already raises the same root issue, leave the finding out of \`findings\` and put its source ids in \`covered\` with that thread's id (the id in \`[thread <id>]\`). Never post what a person or an earlier round already raised.`,
+    ...(fullPass ? [`Completeness check. Compare the scout's flagged surfaces with what came back. When a flagged surface came back suspiciously thin (a persistence surface with no data-integrity finding, an auth or untrusted_input surface with no security finding), review that surface yourself through the missing lens, and add what you find with \`sources\` empty.`] : []),
+    `Final severity. ${SEVERITIES} A source's severity is a first guess: set the one the evidence supports.`,
+    `Weigh each cleanup finding on impact (what goes wrong, and for whom, if it is left), effort (how big the fix is) and rabbit-hole risk (whether the fix stays contained, or invites a debate, a redesign or changes across the pull request). Set \`post\` true only when the impact is worth the effort and the fix stays contained. A cleanup finding with no impact is not posted, whatever the effort. Keep every cleanup finding that survived verification in \`findings\`, with \`post\` false when it isn't worth posting${fullPass ? ', so the summary can count how many were left out' : ''}.${fixRound ? ' In this round a cleanup finding outside the change since the last round is never posted.' : ''} Blocker and robustness findings are always posted, whatever \`post\` says.`,
+    'Order the findings by severity, blockers first.',
+  ]
+  return `${GOAL}
+
+You are the consolidator of this review. ${fixRound
+    ? 'This round reviews the change since the last round: the fix reviewer looked at it and returned raw, unfiltered findings, listed below by id.'
+    : 'Several reviewers each looked at the pull request through one lens and returned raw, unfiltered findings, listed below by id.'} You turn them into this round's comments: deduped, verified against the code, with their final severity, each written so a stranger can act on it. What you write in a finding is posted as it is.
+
+${prInfo()}${laterRound() ? `\n\n${sinceText()}` : ''}
 
 ## The scout's surface map
 
@@ -212,15 +284,9 @@ ${raw.map(rawText).join('\n') || '(none: no reviewer found anything)'}
 
 ## The work
 
-1. Dedupe across sources by (file, line, root issue). The same root issue often comes from several lenses. Merge them into one finding with the sharpest framing; list every source id merged into it in \`sources\` and every lens that raised it in \`lenses\`. Several sources raising it independently is a confidence signal; verify a finding with one source harder before it survives.
-2. Verify every finding against the code, never on the source's word. Re-read the cited lines; if a source says a function returns X, open that function. Read-only inspection (grep, git blame, git log -L) is fine. Give each finding a verdict: CONFIRMED when you can name the triggering input or state and the wrong result, and quote the line; PLAUSIBLE when the mechanism is real but the trigger depends on runtime, config or timing you can't pin down from the repository. Refute a finding only when the code proves it wrong (factually wrong, provably impossible, or already guarded in this change): leave it out of \`findings\` and put its source ids in \`refuted\` with the file:line that proves it. Never refute a real but uncertain finding for being speculative; keep it as PLAUSIBLE.
-3. Dedupe against the existing comment threads. When a thread already raises the same root issue, leave the finding out of \`findings\` and put its source ids in \`covered\` with that thread's id (the id in \`[thread <id>]\`). Never post what a person already raised.
-4. Completeness check. Compare the scout's flagged surfaces with what came back. When a flagged surface came back suspiciously thin (a persistence surface with no data-integrity finding, an auth or untrusted_input surface with no security finding), review that surface yourself through the missing lens, and add what you find with \`sources\` empty.
-5. Final severity. ${SEVERITIES} A source's severity is a first guess: set the one the evidence supports.
-6. Weigh each cleanup finding on impact (what goes wrong, and for whom, if it is left), effort (how big the fix is) and rabbit-hole risk (whether the fix stays contained, or invites a debate, a redesign or changes across the pull request). Set \`post\` true only when the impact is worth the effort and the fix stays contained. A cleanup finding with no impact is not posted, whatever the effort. Keep every cleanup finding that survived verification in \`findings\`, with \`post\` false when it isn't worth posting, so the summary can say how many were left out. Blocker and robustness findings are always posted, whatever \`post\` says.
-7. Order the findings by severity, blockers first.
+${work.map((w, i) => `${i + 1}. ${w}`).join('\n')}
 
-Account for every raw finding id: each goes in the \`sources\` of the finding it was merged into, or in \`refuted\`, or in \`covered\`. A blocker or robustness id left out of all three is posted by itself as its source wrote it, so leaving one out duplicates or resurrects it.
+Account for every raw finding id: each goes in the \`sources\` of the finding it was merged into, or in \`refuted\`, or in \`covered\`. A blocker or robustness id missing from all three is posted by itself as its source wrote it, so dropping one silently duplicates or resurrects it.
 
 ## Writing each finding
 
@@ -231,13 +297,16 @@ Each finding is posted as an inline comment in the format: a first line with the
 - mechanism: why it's wrong, the root cause with evidence: cite the lines that prove it ("verified: \`grep -c foo lock\` gives 0", "the override is at \`client.py:16-22\`"). Concrete beats confident.
 - failure_scenario: a concrete, specific sequence where it bites in practice, required for blocker and robustness. Not "this could fail" but which input or state leads to which wrong result. For a cleanup finding it may be empty.
 - fix: the concrete change, with a short snippet when it helps, pointing at the pattern already in the repository when there is one.
-- in_fixes: false; this round reviews the whole pull request.
+- in_fixes: ${laterRound()
+    ? 'true when the problem is in the change since the last round, false when it is in code that change didn\'t touch. A source\'s in_fixes is a first guess: set the one the code supports.'
+    : 'false; this round reviews the whole pull request.'}
 - Link code with full-SHA permalinks: https://github.com/${args.pr.repo}/blob/${args.pr.head}/<path>#L<a>-L<b>.
 - Every comment stands alone for a stranger reading the pull request. Never quote the design or refer to it, to the reviewers, or to anything the reader can't see.
 
 note: a sentence for the review's summary, only for something the threads don't already say; usually ''. Never list or repeat findings in it, and never write a status: code writes the status.
 
-human_replies: a reply in a thread a person started (its first comment is from user or human), only when you have something to add there, such as evidence that answers their question. A finding a person already raised goes in \`covered\`, never in a reply.`
+human_replies: a reply in a thread a person started (its first comment is from user or human), only when you have something to add there, such as evidence that answers their question. A finding a person already raised goes in \`covered\`, never in a reply.${laterRound() ? `\n\n${NO_NEW}` : ''}`
+}
 
 // ---- Later rounds: what the verifier is asked, and what code does with its answers ----
 
@@ -336,7 +405,7 @@ const applyVerdicts = vs => {
       state = 'needs_person'
     } else action = 'none'
     if (action === 'none' && state === 'needs_person') needs(t, stripMarks(latestReviewerReply(t) || '').slice(NEEDS.length).trim())
-    out.states.push({ severity: t.severity, state, nonblocking: false })
+    out.states.push({ severity: t.severity, state, nonblocking: t.nonblocking })
   }
   return out
 }
@@ -415,7 +484,7 @@ If a conclusion depends on an inference, state that explicitly in the finding an
 <calibration_rules>
 Prefer one strong finding over several weak ones.
 Do not dilute serious issues with filler.
-If the change looks safe, say so directly and return no findings.
+If the change looks safe, say so directly and return no findings.${laterRound() ? `\n${NO_NEW}` : ''}
 </calibration_rules>
 
 <repository_context>
@@ -516,14 +585,19 @@ const toPost = (c, { fullPass }) => {
       lenses: [r.source], verdict: 'PLAUSIBLE', mechanism: r.mechanism, failure_scenario: r.failure_scenario, fix: r.fix,
       in_fixes: r.in_fixes === true, post: true })
   }
-  return { posted: posted.map(anchor), droppedMinor }
+  // A 🔴 or 🟠 a round without a full pass found outside its fixes is posted but doesn't block: the last full pass
+  // covered that code.
+  const nonblocking = f => BLOCKING.includes(f.severity) && !fullPass && f.in_fixes !== true
+  return { posted: posted.map(f => anchor({ ...f, nonblocking: nonblocking(f) })), droppedMinor }
 }
 
 const render = (f, round) => {
   const lenses = Array.isArray(f.lenses) && f.lenses.length ? ` · ${f.lenses.join(', ')}` : ''
   const parts = [`${SEV[f.severity]} **${f.headline}** · \`${f.location}\`${lenses} · ${f.verdict}`, `**Mechanism.** ${f.mechanism}`]
   if (f.severity !== 'cleanup' || (isStr(f.failure_scenario) && f.failure_scenario.trim())) parts.push(`**Failure scenario.** ${f.failure_scenario}`)
-  parts.push(`**Fix.** ${f.fix}`, MARK(round))
+  parts.push(`**Fix.** ${f.fix}`)
+  if (f.nonblocking) parts.push(NONBLOCKING)
+  parts.push(MARK(round))
   return parts.join('\n\n')
 }
 
@@ -550,7 +624,10 @@ const openCounts = states => {
   const n = sev => states.filter(x => x.severity === sev && (x.state === 'open' || x.state === 'needs_person')).length
   return { blocking: n('blocker'), should_fix: n('robustness') }
 }
+// Done when nothing blocking is open (threads waiting on a person and findings outside a round's fixes don't block),
+// or when the round limit is reached.
 const isDone = states => !states.some(x => x.state === 'open' && BLOCKING.includes(x.severity) && !x.nonblocking)
+  || roundsSince() >= ROUND_LIMIT
 
 const main = async () => {
   if (!inputsOk(args)) return result('failed', { stage: 'inputs', error: 'review-wf is started by /dev-work:review, which reads the pull request and passes it in. Run /dev-work:review <PR> instead.' })
@@ -581,9 +658,10 @@ const main = async () => {
   for (const t of threads) {
     if (!t || !Array.isArray(t.comments) || t.comments.length === 0) continue
     const comments = t.comments.map(c => ({ ...c, kind: who(c) }))
-    const th = { ...t, severity: null, comments }
+    const th = { ...t, severity: null, nonblocking: false, comments }
     if (comments[0].kind === 'reviewer') {
       th.severity = sevOf(comments[0].body)
+      th.nonblocking = norm(comments[0].body).includes(NONBLOCKING)
       reviewerThreads.push(th)
       for (const c of comments) {
         const at = Date.parse(c.created_at)
@@ -592,19 +670,39 @@ const main = async () => {
     } else humanThreads.push(th)
   }
 
-  S = { mine: logins.includes(pr.author), rounds, last, round: last ? last.round + 1 : 1, fullPasses: rounds.filter(r => r.full).length, reviewerThreads, humanThreads, userReplyAt }
+  S = { mine: logins.includes(pr.author), rounds, last, round: last ? last.round + 1 : 1, fullPasses: rounds.filter(r => r.full).length, fullPass: false, reviewerThreads, humanThreads, userReplyAt }
 
+  // A run that posts nothing reports where the existing threads stand, as the last round left them.
+  const standing = () => {
+    const now = applyVerdicts([])
+    return { round: S.last.round, open: openCounts(now.states), needs_human: now.needsHuman }
+  }
   if (S.last && S.last.done && !(S.userReplyAt > S.last.at)) {
-    return result('done', { done: true, round: S.last.round, skipped: 'The review is already done; nothing was posted.' })
+    return result('done', { ...standing(), done: true, skipped: 'The review is already done; nothing was posted.' })
+  }
+  // Nothing new: the same head as the last round and no reply in the reviewer's threads since it. A reply whose time
+  // can't be read counts as new, so a reply is never skipped.
+  const newReply = S.last && S.reviewerThreads.some(t => t.comments.some(c => {
+    const at = Date.parse(c.created_at)
+    return c.kind !== 'reviewer' && (Number.isNaN(at) || at > S.last.at)
+  }))
+  if (S.last && pr.head === S.last.commit && !newReply) {
+    return result('done', { ...standing(), skipped: `nothing new since round ${S.last.round}: no new commit and no reply in the reviewer's threads; nothing was posted` })
   }
 
-  const fullPass = true
   const scout = must(await ag(scoutPrompt(), { label: 'scout', phase: 'Scout', ...tier('sonnet'), schema: SCOUT }), 'scout')
+  const wantsFull = S.round > 1 && scout.full_pass === true
+  const fullPass = S.round === 1 || (wantsFull && S.fullPasses < FULL_PASS_LIMIT)
+  S.fullPass = fullPass
+  const reason = isStr(scout.reason) && scout.reason.trim() ? scout.reason.trim() : 'no reason given'
+  const limit = wantsFull && !fullPass
+    ? `A full review was warranted (${reason}) but the limit of two per pull request was reached, so this needs a person.`
+    : null
+
   // Later rounds: answer each earlier finding's thread before looking for anything new.
   const stale = toVerify()
-  const since = S.last && S.last.commit && args.since_fetched ? S.last.commit : pr.base
   const verdicts = stale.length
-    ? must(await ag(verifierPrompt(stale, since), { label: 'verifier', phase: 'Verify', ...tier('opus'), schema: VERIFY }), 'verifier')
+    ? must(await ag(verifierPrompt(stale, since()), { label: 'verifier', phase: 'Verify', ...tier('opus'), schema: VERIFY }), 'verifier')
     : { threads: [] }
   const applied = applyVerdicts(verdicts.threads)
 
@@ -612,16 +710,23 @@ const main = async () => {
   const tags = new Set(surfaces.flatMap(s => (Array.isArray(s.tags) ? s.tags : [])))
   const lensModel = name => (name === 'security' ? (tags.has('auth') || tags.has('untrusted_input') ? 'opus' : 'sonnet') : LENS_MODEL[name])
 
-  const names = lensesFor(scout)
-  const cx = codexThunk()
-  const found = await parallel([...names.map(n => () => ag(lensPrompt(n), { label: `lens-${n}`, phase: 'Review', ...tier(lensModel(n)), schema: FINDINGS })), ...(cx ? [cx] : [])])
-  names.forEach((n, i) => addRaw(n, must(found[i], `lens-${n}`).findings))
-  const codex = runCodex(cx ? found[names.length] : null)
+  // A full pass runs round 1's lenses and Codex over the whole PR; any other round, the fix reviewer over the change.
+  let codex = { ran: false, reason: 'Codex runs only in a full pass' }
+  if (fullPass) {
+    const names = lensesFor(scout)
+    const cx = codexThunk()
+    const found = await parallel([...names.map(n => () => ag(lensPrompt(n), { label: `lens-${n}`, phase: 'Review', ...tier(lensModel(n)), schema: FINDINGS })), ...(cx ? [cx] : [])])
+    names.forEach((n, i) => addRaw(n, must(found[i], `lens-${n}`).findings))
+    codex = runCodex(cx ? found[names.length] : null)
+  } else {
+    const fr = must(await ag(fixReviewPrompt(), { label: 'fix-review', phase: 'Review', ...tier('opus'), schema: FIX_FINDINGS }), 'fix-review')
+    addRaw('fix-review', fr.findings)
+  }
 
-  const c = must(await ag(consolidatorPrompt(surfaces), { label: 'consolidator', phase: 'Consolidate', ...tier('opus'), schema: CONSOLIDATED }), 'consolidator')
+  const c = must(await ag(consolidatorPrompt(surfaces, { fullPass }), { label: 'consolidator', phase: 'Consolidate', ...tier('opus'), schema: CONSOLIDATED }), 'consolidator')
   const { posted, droppedMinor } = toPost(c, { fullPass })
 
-  const states = [...applied.states, ...posted.map(f => ({ severity: f.severity, state: 'open', nonblocking: false }))]
+  const states = [...applied.states, ...posted.map(f => ({ severity: f.severity, state: 'open', nonblocking: f.nonblocking }))]
   const done = isDone(states)
   const open = openCounts(states)
   const humanIds = new Set(S.humanThreads.map(t => t.id))
@@ -631,13 +736,14 @@ const main = async () => {
   const review = {
     event: S.mine ? 'COMMENT' : 'PENDING',
     commit: pr.head,
-    body: summary({ round: S.round, fullPass, since: S.last ? S.last.round : null, done, open, droppedMinor, note: c.note, limit: null }),
+    body: summary({ round: S.round, fullPass, since: S.last ? S.last.round : null, done, open, droppedMinor, note: c.note, limit }),
     comments: posted.map(f => ({ path: f.path, line: f.line, body: render(f, S.round) })),
     replies: [...applied.replies, ...replies],
     resolve: applied.resolve,
     unresolve: applied.unresolve,
   }
-  return result('done', { done, round: S.round, full_pass: fullPass, open, needs_human: applied.needsHuman, review, codex: { ran: codex.ran, reason: codex.reason } })
+  const needsHuman = [...applied.needsHuman, ...(limit ? [{ thread: null, url: null, why: limit }] : [])]
+  return result('done', { done, round: S.round, full_pass: fullPass, open, needs_human: needsHuman, review, codex: { ran: codex.ran, reason: codex.reason } })
 }
 
 try { return await main() } catch (e) { return result('failed', { stage: (e && e.stage) || lastLabel, error: String((e && e.message) || (e && e.stage) || e) }) }

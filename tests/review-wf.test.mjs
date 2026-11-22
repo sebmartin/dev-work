@@ -350,3 +350,97 @@ test('later-round prompts expect no new findings when the fixes hold', async () 
   const { prompt } = await run(later)
   assert.match(prompt('verifier'), /no new findings is the expected result/)
 })
+
+// ---- Later rounds: the fix reviewer, the full pass and its limit, the round count ----
+const wantsFull = () => ({ surfaces: [], lenses: ['correctness'], full_pass: true, reason: 'adds a sync engine' })
+
+test('a later round verifies, then reviews only the change since the last round, and codex does not run', async () => {
+  const { calls, prompt } = await run(later)
+  assert.deepEqual(calls.map(c => c.label), ['scout', 'verifier', 'fix-review', 'consolidator'])
+  assert.ok(prompt('fix-review').includes(`git diff ${sha('a')} ${sha('c')}`))
+  assert.match(prompt('fix-review'), /only what is part of the PR's own diff/)
+})
+test('after a force-push whose old commit could not be fetched, the whole PR diff is the change', async () => {
+  const { prompt } = await run({ ...later, since_fetched: false })
+  assert.ok(prompt('fix-review').includes(`git diff ${sha('b')} ${sha('c')}`))
+})
+test('no 🟡 outside the fixes is posted in a round without a full pass, and the summary never counts left-out points', async () => {
+  const { result } = await run(later, { consolidator: () => ({ ...empty, findings: [f({ severity: 'cleanup', post: true, in_fixes: false })] }) })
+  assert.equal(result.review.comments.length, 0); assert.doesNotMatch(result.review.body, /left out/)
+})
+test('a 🔴 outside the fixes is posted but does not block', async () => {
+  const { result } = await run(later, { verifier: () => ({ threads: [v('T1', 'resolve', 'fix', 'a.js:5', 'ok')] }), consolidator: () => ({ ...empty, findings: [f({ severity: 'blocker', in_fixes: false })] }) })
+  assert.match(result.review.comments[0].body, /Found outside this round's fixes/); assert.equal(result.done, true); assert.equal(result.open.blocking, 1)
+  assert.match(result.review.body, /Review done\. Still open, for a person to weigh: 1 🔴, 0 🟠\./)
+})
+test('a 🟠 found in the fixes blocks', async () => {
+  const { result } = await run(later, { verifier: () => ({ threads: [v('T1', 'resolve', 'fix', 'a.js:5', 'ok')] }), consolidator: () => ({ ...empty, findings: [f({ in_fixes: true })] }) })
+  assert.equal(result.done, false)
+})
+test('a non-blocking thread from an earlier round still does not block', async () => {
+  const old = { ...later, threads: [thread('T2', "🔴 **X**\n\n_Found outside this round's fixes, so it doesn't hold up the review._\n\n<!-- dev-work:review round=1 -->", [])] }
+  assert.equal((await run(old)).result.done, true)
+})
+test('when the scout says the change needs it, a full pass runs after the verifier, with codex, and restarts the count', async () => {
+  const { calls, result } = await run(later, { scout: wantsFull })
+  const labels = calls.map(c => c.label)
+  assert.ok(labels.indexOf('verifier') < labels.indexOf('lens-correctness')); assert.ok(labels.includes('codex')); assert.ok(!labels.includes('fix-review'))
+  assert.equal(result.full_pass, true); assert.match(result.review.body, /^\*\*Round 2: full review\.\*\*/)
+})
+test('a full pass dedupes against existing threads', async () => {
+  const { prompt } = await run(later, { scout: wantsFull })
+  assert.match(prompt('consolidator'), /\[thread T1\]/); assert.match(prompt('consolidator'), /covered/)
+})
+test('a third full pass is never run: the round reviews the fixes and flags a person', async () => {
+  const two = { ...later, reviews: [review(1, { full: true, at: 1, commit: sha('a') }), review(2, { full: true, at: 2, commit: sha('a') })] }
+  const { calls, result } = await run(two, { scout: wantsFull })
+  assert.ok(calls.some(c => c.label === 'fix-review')); assert.ok(!calls.some(c => c.label.startsWith('lens-') || c.label === 'codex'))
+  assert.equal(result.full_pass, false); assert.match(result.review.body, /full review was warranted \(adds a sync engine\) but the limit of two per pull request was reached/)
+  assert.ok(result.needs_human.some(n => n.thread === null && /limit/.test(n.why)))
+})
+test('three reviewer rounds since the last full pass end the review', async () => {
+  const three = { ...later, reviews: [review(1, { full: true, at: 1, commit: sha('a') }), review(2, { at: 2, commit: sha('a') })] }
+  const { result } = await run(three, { verifier: () => ({ threads: [v('T1', 'still_wrong', 'fix', 'a.js:4', 'no')] }) })
+  assert.equal(result.round, 3); assert.equal(result.done, true); assert.match(result.review.body, /Review done\. Still open/)
+})
+test('the user\'s reply in a reviewer thread restarts the round count', async () => {
+  const replied = { ...later, reviews: [review(1, { full: true, at: 1, commit: sha('a') }), review(2, { at: 2, commit: sha('a') })],
+    threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: 'fix it', at: 2.5 }])] }
+  const { result } = await run(replied, { verifier: () => ({ threads: [v('T1', 'still_wrong', 'fix', 'a.js:4', 'no')] }) })
+  assert.equal(result.done, false)
+})
+test('a develop or other human reply does not restart the count', async () => {
+  const devReply = { ...later, reviews: [review(1, { full: true, at: 1, commit: sha('a') }), review(2, { at: 2, commit: sha('a') })],
+    threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: 'Fixed <!-- dev-work:develop round=2 -->', at: 2.5 }, { author: 'stranger', body: 'agree', at: 2.6 }])] }
+  assert.equal((await run(devReply, { verifier: () => ({ threads: [v('T1', 'still_wrong', 'fix', 'a.js:4', 'no')] }) })).result.done, true)
+})
+test('a full pass in round 3 restarts the count instead of ending the review', async () => {
+  const three = { ...later, reviews: [review(1, { full: true, at: 1, commit: sha('a') }), review(2, { at: 2, commit: sha('a') })] }
+  const { result } = await run(three, { scout: wantsFull, verifier: () => ({ threads: [v('T1', 'still_wrong', 'fix', 'a.js:4', 'no')] }) })
+  assert.equal(result.done, false)
+})
+test('human comments are never counted as rounds', async () => {
+  const humanReview = { ...later, reviews: [...later.reviews, { id: 'HR', author: 'stranger', body: 'nice', commit: sha('a'), state: 'COMMENTED', submitted_at: iso(1.5) }] }
+  assert.equal((await run(humanReview)).result.round, 2)
+})
+test('a later run with no new commit and no new reply posts nothing and runs no agent', async () => {
+  const same = { ...later, pr: { ...later.pr, head: sha('a') }, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [])] }
+  const { result, calls } = await run(same)
+  assert.equal(calls.length, 0); assert.equal(result.review, null); assert.match(result.skipped, /nothing new since round 1/)
+})
+test('a run with nothing new reports the last round and the threads still open, and is not done', async () => {
+  const same = { ...later, pr: { ...later.pr, head: sha('a') }, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [])] }
+  const { result } = await run(same)
+  assert.deepEqual([result.round, result.done, result.open], [1, false, { blocking: 0, should_fix: 1 }])
+})
+test('a reply whose time cannot be read counts as new, so the round runs', async () => {
+  const same = { ...later, pr: { ...later.pr, head: sha('a') } }
+  same.threads = [{ ...same.threads[0], comments: [same.threads[0].comments[0], { ...same.threads[0].comments[1], created_at: null }] }]
+  const { calls } = await run(same)
+  assert.equal(calls[0].label, 'scout')
+})
+test('a later round never mentions a finding that was never posted', async () => {
+  const { prompt } = await run(later)
+  for (const l of ['fix-review', 'consolidator', 'scout']) assert.match(prompt(l), /no new findings is the expected result/)
+  assert.doesNotMatch(prompt('consolidator'), /left out/)
+})
