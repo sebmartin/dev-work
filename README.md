@@ -1,6 +1,6 @@
 # dev-work
 
-dev-work is a Claude Code plugin for doing development work with agents. You describe a change and work out its design with Claude. dev-work then plans and implements the change, reviews the result, and opens a pull request for you to review and merge.
+dev-work is a Claude Code plugin for doing development work with agents. You describe a change and work out its design with Claude. dev-work then plans and implements the change, reviews the result, and opens a pull request for you to review and merge. It can also review a pull request, and re-review it after the author's fixes.
 
 It draws on two other plugins:
 
@@ -9,7 +9,7 @@ It draws on two other plugins:
 
 ## How it works
 
-There are two commands.
+There are three commands.
 
 ```mermaid
 sequenceDiagram
@@ -87,6 +87,10 @@ Inside the workflow, everything passes as text: each agent gets the full instruc
 
 You review the pull request and merge it yourself. The pull request holds the full record of the work for reviewers and later readers; the log in the thread is the short local trail that points to it, including a line for each review round.
 
+`/dev-work:review <PR>` reviews a pull request, yours or someone else's. The first run is a full review whose findings use deep-review's finding format. Later runs check the author's fixes, reply in each finding's thread, and review what changed since the last round. They don't raise nitpicks. Whether the review is done is decided in code, not by an agent.
+
+Each round is posted as one review: findings inline, a short summary with the review's status and a footer line, and an invisible marker line at the end of each comment. On your own PRs the review is submitted as a `COMMENT`, never an approval or a request for changes, and threads whose fixes hold are resolved. On anyone else's PR the review is saved as a pending draft for you to read and submit, settled threads get a reply starting `✅ Settled`, and none is resolved. Your GitHub logins are read from `dev-work/review-logins` in the Claude Code configuration directory (`~/.claude` unless `$CLAUDE_CONFIG_DIR` is set), one per line, with blank lines and lines starting with `#` ignored. When the file is missing, the active `gh` account is used, and the command stops if that account is a bot. If the Codex CLI is installed and signed in, full passes also get a second opinion from it.
+
 ## Keeping thread content private
 
 Threads can hold private notes, so the agents that write code are not given them. They see only the worktree and what their prompts give them. They run as a dedicated agent type, `dev-work:worker`, which can't use the ai-workspace tools. The workflow's agents get the design's text and nothing else from the thread. Commit messages and pull request text are written by those agents, so someone who has never seen the thread can follow them, and the orchestrator reads them before they go out.
@@ -96,6 +100,7 @@ Threads can hold private notes, so the agents that write code are not given them
 - Claude Code, with dynamic workflows enabled.
 - The ai-workspace plugin.
 - The GitHub CLI (`gh`), signed in.
+- Codex CLI (optional), installed and signed in, for a second opinion in full review passes.
 
 ## Install
 
@@ -120,7 +125,15 @@ Develop needs a session started in a directory that contains the repository: the
 /dev-work:develop <todo>
 ```
 
-You can follow the run with `/workflows`. It ends with a pull request, with a question for you, or with a report explaining why it failed. Run the same command again later and develop picks up where the todo stands:
+To review a pull request, run the review command in a session started in a directory that contains the repository. If the PR belongs to a todo developed with dev-work, resume the todo's thread first so the review can use its design:
+
+```
+/dev-work:review <PR number or URL>
+```
+
+Run it again after the author pushes fixes or replies. Each run is one round, and it says when the review is done.
+
+You can follow a develop run with `/workflows`. It ends with a pull request, with a question for you, or with a report explaining why it failed. Run the same command again later and develop picks up where the todo stands:
 
 - **After you review the pull request** and leave comments or ask for changes, it fixes them on the same branch, has the fixes reviewed, shows you what changed and asks before pushing and replying to your comments. If you have the branch checked out somewhere at the time, it asks you to switch away first. A worktree dev-work left behind, from an older version or an interrupted run, is removed for you as long as it holds no uncommitted changes.
 - **If a run failed or was interrupted,** resume the session that ran it and run the command again: completed steps aren't redone. A failed run that can't be resumed is re-planned on the same branch, not rebuilt on a new one.
