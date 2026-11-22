@@ -47,7 +47,7 @@ const SEV = { type: 'string', enum: ['Critical', 'Important', 'Minor'] }
 const FINDING = obj({ id: str, severity: SEV, text: str, consequence: { type: 'string', description: 'what actually goes wrong, and for whom, if this ships as it is' }, plan_mandated: bool }, ['id', 'severity', 'text', 'consequence'])
 const PLAN = obj({ overview: str, global_constraints: str, review_focus: str, assumptions: arr(str), follow_ups: arr(str), tasks: arr(obj({ n: int, title: str, text: str })) })
 const DISPOSITIONS = ['kept', 'revised', 'new', 'dropped']
-const REPLAN = { ...PLAN, properties: { ...PLAN.properties, tasks: arr(obj({ n: int, title: str, text: str, disposition: { type: 'string', enum: DISPOSITIONS }, reason: str })) } }
+const REPLAN = { ...PLAN, properties: { ...PLAN.properties, tasks: arr(obj({ n: int, title: str, text: str, disposition: { type: 'string', enum: DISPOSITIONS }, reason: str, from: { type: 'integer', description: 'for a kept or revised task, the old plan task number it comes from, as the outcomes list numbers it' } }, ['n', 'title', 'text', 'disposition', 'reason'])) } }
 const IMPL = obj({
   status: { type: 'string', enum: ['DONE', 'DONE_WITH_CONCERNS', 'NEEDS_CONTEXT', 'BLOCKED'] },
   head_sha: SHA,
@@ -66,6 +66,10 @@ const ASKING = `Return a question for the user only when a wrong guess would be 
 
 // Added to every PR description the workflow writes, so it's always there whatever the template.
 const FOOTER = '\n\n---\nWritten by agents with [dev-work](https://github.com/sebmartin/dev-work).'
+// A review round is given the PR's current description, which already ends with the footer; strip any before adding one.
+// Tolerant of CRLF (a description edited on GitHub comes back with \r\n), a changed link or a missing period.
+const FOOTER_RE = /\n*-{3,}[ \t]*\n[ \t]*Written by agents with \[dev-work\]\([^)]*\)\.?[ \t]*/g
+const withFooter = body => body.replace(/\r\n/g, '\n').replace(FOOTER_RE, '').trimEnd() + FOOTER
 const LOCAL = 'Work only in this checkout, your current directory: commit on the current branch, never push or touch a remote. Add every change as a new commit: never amend, rebase, reset or otherwise rewrite commits, and never force-add ignored files (no `git add -f`). Put any scratch files in .dev-work/scratch/ in this checkout, never anywhere else. Write commit messages for a stranger: what changed and why, in their own terms.'
 const NO_SUB = 'Do all of this yourself. Never spawn a subagent to do part of it, and above all never spawn a reviewer to check your work.'
 const INPUTS = (A.inputs || []).length ? `\nInput files the design names are in .dev-work/inputs/:\n${A.inputs.map(i => `- .dev-work/inputs/${i.name}: ${i.description}`).join('\n')}` : ''
@@ -90,13 +94,19 @@ if (RP) {
   surfaced.push(...(RP.surfaced || []).map(x => `before the re-plan: ${x}`))
 }
 // A task the re-planner left without a disposition is built: it counts as new, never as kept.
-// A task counts as kept only if the earlier run's outcomes show it built and reviewed (done, or kept by an
-// earlier re-plan): anything else the planner marks kept is built. With only the saved plan there are no
-// outcomes, so the planner's check of the code is all there is.
-const builtBefore = n => RP.source === 'saved-plan' || (RP.tasks || []).some(o => o.task === n && ['done', 'kept'].includes(o.state))
-const demoted = t => !!RP && t.disposition === 'kept' && !builtBefore(t.n)
+// A task counts as kept only if the earlier run's outcomes show the task it names in `from` built and reviewed
+// (done, or kept by an earlier re-plan): a kept task with no `from`, or whose `from` wasn't finished, is built.
+// Matching on `from` rather than the task's new number means renumbering can't pair it with a different task.
+// With only the saved plan there are no outcomes, so the planner's check of the code is all there is.
+// Two kept tasks can't both claim the same earlier task: only the first is accepted.
+const firstClaim = t => plan.tasks.find(x => x.disposition === 'kept' && x.from === t.from) === t
+const builtBefore = t => RP.source === 'saved-plan' || (Number.isInteger(t.from) && firstClaim(t) && (RP.tasks || []).some(o => o.task === t.from && ['done', 'kept'].includes(o.state)))
+const demoted = t => !!RP && t.disposition === 'kept' && !builtBefore(t)
 const disposition = t => (RP && DISPOSITIONS.includes(t.disposition) && !demoted(t) ? t.disposition : 'new')
-const why = t => `${t.reason || 'no reason given'}${demoted(t) ? '; marked kept, but the earlier run does not record this task as done, so it is built' : ''}`
+const demotedBecause = t => !Number.isInteger(t.from) ? 'it names no earlier task in from'
+  : !firstClaim(t) ? `another kept task already comes from earlier task ${t.from}`
+  : `the earlier run does not record task ${t.from} as done`
+const why = t => `${t.reason || 'no reason given'}${demoted(t) ? `; marked kept, but ${demotedBecause(t)}, so it is built` : ''}`
 const skipped = t => ['kept', 'dropped'].includes(disposition(t))
 
 // The run's state, kept where result() can reach it from any ending, including a review round that never plans.
@@ -581,10 +591,10 @@ For each item, write one reply of one or two lines, standing on its own, that st
 - "Not changed: <the reason, concrete>." when it wasn't;
 - "Partly: <what was done, and what wasn't and why>." when only some of it was;
 - "Question: <what's unclear>." when the item can't be acted on as written.
-No thanks, no apologies, and don't restate the comment; disagree with evidence, not tone. If the round changed anything the description says, return the whole updated description in pr_body; otherwise return pr_body empty.`,
+No thanks, no apologies, and don't restate the comment; disagree with evidence, not tone. If the round changed anything the description says, return the whole updated description in pr_body, without the footer at its end (one is added for you); otherwise return pr_body empty.`,
     { label: `round-${R}-write-up`, phase: 'Write-up', model: 'sonnet', effort: 'medium', schema: obj({ replies: arr(obj({ id: str, reply: str })), pr_body: str }) })
   if (!w) return result('failed', { stage: 'round write-up' })
-  return result('done', { final_head: loop.head, round: R, outcome, surfaced, replies: w.replies, pr_body: w.pr_body ? w.pr_body.trimEnd() + FOOTER : '' })
+  return result('done', { final_head: loop.head, round: R, outcome, surfaced, replies: w.replies, pr_body: w.pr_body ? withFooter(w.pr_body) : '' })
 }
 
 // ---------- Plan ----------
@@ -600,7 +610,7 @@ This design was planned and partly built before, on this branch. ${RP.source ===
   : `The old plan below was built for a design that turned out to be missing something. What changed:\n\n${RP.decision || '(no decision was recorded; compare the old plan with the design above)'}`}
 
 Nothing in the old plan is reused by default: every task, built or not, has to be justified again against the updated design. Plan from the updated design first, then check the old plan for what still holds. Mark every task in your plan with a disposition and its reason:
-- kept: already built and still right. It is not built again. Keep the old plan's task number for it: only a task the earlier run's outcomes show as done (or kept) is accepted as kept, and any other is built.
+- kept: already built and still right. It is not built again. Give it \`from\`, the old plan's task number as the outcomes below list it: only a task whose \`from\` the earlier run's outcomes show as done (or kept) is accepted as kept, and any other is built.
 - revised: built, but needs changing. It is built again, as a change to what is on the branch.
 - new: not in the old plan, or in it but not built yet. Unbuilt tasks that still hold are reused as written and marked new.
 - dropped: no longer wanted. Its code, if it is on the branch, is removed as part of a revised or new task; say which.
@@ -714,7 +724,7 @@ Write the full plan, overview and tasks, to .dev-work/implementation-plan.md in 
 - overview: everything in the plan before the first task (title, Goal, Architecture, Tech Stack, Global Constraints, Review Focus, file structure).
 - global_constraints and review_focus: those two sections' text.
 - assumptions and follow_ups: one entry each.
-- tasks: in order, each with its number, its title and its full text, exactly as the plan has it${RP ? ', its disposition (kept, revised, new or dropped) and its reason' : ''}.`,
+- tasks: in order, each with its number, its title and its full text, exactly as the plan has it${RP ? ', its disposition (kept, revised, new or dropped), its reason, and for a kept or revised task \`from\`, the old plan task number it comes from' : ''}.`,
   { label: 'plan', phase: 'Plan', model: 'opus', effort: 'medium', schema: RP ? REPLAN : PLAN })
 if (!planned) return result('failed', { stage: 'plan' })
 plan = planned
@@ -970,6 +980,6 @@ Don't add a footer or a note about how this was made; one is added for you. Retu
   { label: 'write-up', phase: 'Write-up', model: 'sonnet', effort: 'medium', schema: obj({ title: str, body: str }) })
 if (!w) return result('failed', { stage: 'write-up' })
 
-return result('done', { final_head: lastHead, scan: pre.scan, assumptions: plan.assumptions, follow_ups: plan.follow_ups, final_review: final.summary, surfaced, pr_title: w.title, pr_body: w.body.trimEnd() + FOOTER })
+return result('done', { final_head: lastHead, scan: pre.scan, assumptions: plan.assumptions, follow_ups: plan.follow_ups, final_review: final.summary, surfaced, pr_title: w.title, pr_body: withFooter(w.body) })
 }
 try { return await main() } catch (e) { return result('failed', { stage: lastLabel, error: String((e && e.message) || e) }) }

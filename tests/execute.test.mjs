@@ -298,7 +298,7 @@ test('the deferral check prompt asks when the user must decide', async () => {
 const replanArgs = { ...start, replan: { source: 'paused', plan: 'OLD-PLAN', tasks: [{ task: 1, title: 'one', state: 'done', commits: 'aaaaaaa..bbbbbbb' }],
   rulings: ['Ruling: OLD; why: w; cost if wrong: c'], deferred: ['OLD-DEFERRED'], parked: [], decision: 'THE-DECISION', head: sha('d') } }
 const replanned = () => ({ overview: 'OVERVIEW', global_constraints: 'GC', review_focus: 'RF', assumptions: [], follow_ups: [], tasks: [
-  { n: 1, title: 'one', text: 'TASK ONE', disposition: 'kept', reason: 'still right' },
+  { n: 1, title: 'one', text: 'TASK ONE', disposition: 'kept', reason: 'still right', from: 1 },
   { n: 2, title: 'two', text: 'TASK TWO', disposition: 'revised', reason: 'flag changes' },
   { n: 3, title: 'three', text: 'TASK THREE', disposition: 'new', reason: 'the decision' },
   { n: 4, title: 'four', text: 'TASK FOUR', disposition: 'dropped', reason: 'no longer wanted' }] })
@@ -502,6 +502,31 @@ test('a review round that rewrites the description gets the footer too, and one 
   assert.equal((await run(round)).result.pr_body, '')
 })
 
+test('a review round that keeps the footer it was given still ends with exactly one', async () => {
+  const keeps = { 'round-1-write-up': () => ({ replies: [{ id: 'PR1-1', reply: 'Fixed in abc1234: renamed.' }], pr_body: 'NEW-BODY\n\n---\nWritten by agents with [dev-work](https://github.com/sebmartin/dev-work).\n' }) }
+  const body = (await run(round, keeps)).result.pr_body
+  assert.match(body, FOOTER)
+  assert.equal(body.split('Written by agents with').length, 2)
+  assert.match(body, /^NEW-BODY\n\n---\n/)
+  // A description edited on GitHub comes back with CRLF; a reworded link or a missing period is still a footer.
+  const crlf = { 'round-1-write-up': () => ({ replies: [], pr_body: 'NEW-BODY\r\n\r\n---\r\nWritten by agents with [dev-work](https://example.org/x)\r\n' }) }
+  const b2 = (await run(round, crlf)).result.pr_body
+  assert.equal(b2.split('Written by agents with').length, 2)
+  assert.match(b2, /^NEW-BODY\n\n---\n/)
+})
+
+test('the final write-up keeps exactly one footer when it writes one itself', async () => {
+  const keeps = { 'write-up': () => ({ title: 'T', body: 'BODY\n\n---\nWritten by agents with [dev-work](https://github.com/sebmartin/dev-work).' }) }
+  const body = (await run(start, keeps)).result.pr_body
+  assert.equal(body.split('Written by agents with').length, 2)
+  assert.match(body, FOOTER)
+})
+
+test('the round write-up is told the footer is added for it', async () => {
+  const { prompt } = await run(round)
+  assert.match(prompt('round-1-write-up'), /without the footer at its end/)
+})
+
 test('round replies are asked to start with what happened', async () => {
   const { prompt } = await run(round)
   assert.match(prompt('round-1-write-up'), /Fixed in <short commit id>/)
@@ -512,16 +537,49 @@ const keptPlan = tasks => () => ({ overview: 'OVERVIEW', global_constraints: 'GC
 
 test('a task marked kept that the earlier run did not finish is built', async () => {
   const { result, calls, prompt } = await run(replanArgs, { plan: keptPlan([
-    { n: 1, title: 'one', text: 'TASK ONE', disposition: 'kept', reason: 'still right' },
-    { n: 2, title: 'two', text: 'TASK TWO', disposition: 'kept', reason: 'looks fine' }]) })
+    { n: 1, title: 'one', text: 'TASK ONE', disposition: 'kept', reason: 'still right', from: 1 },
+    { n: 2, title: 'two', text: 'TASK TWO', disposition: 'kept', reason: 'looks fine', from: 2 }]) })
   const labels = calls.map(c => c.label)
   assert.ok(!labels.includes('implement-1'))
   assert.ok(labels.includes('implement-2'))
   assert.deepEqual(result.replan_counts, { kept: 1, revised: 0, new: 1, dropped: 0 })
-  assert.match(prompt('final-review'), /does not record this task as done/)
+  assert.match(prompt('final-review'), /does not record task 2 as done/)
   const inProgress = { ...replanArgs, replan: { ...replanArgs.replan, tasks: [{ task: 1, title: 'one', state: 'in progress' }] } }
-  const r2 = await run(inProgress, { plan: keptPlan([{ n: 1, title: 'one', text: 'T', disposition: 'kept', reason: 'r' }]) })
+  const r2 = await run(inProgress, { plan: keptPlan([{ n: 1, title: 'one', text: 'T', disposition: 'kept', reason: 'r', from: 1 }]) })
   assert.ok(r2.calls.some(c => c.label === 'implement-1'))
+})
+
+test('a kept task is matched to the earlier run by from, not by its new number', async () => {
+  // The earlier run finished task 1 only. The re-planner renumbers: new task 1 says it comes from old task 2, which never ran.
+  const renumbered = await run(replanArgs, { plan: keptPlan([
+    { n: 1, title: 'two', text: 'TASK TWO', disposition: 'kept', reason: 'r', from: 2 },
+    { n: 2, title: 'one', text: 'TASK ONE', disposition: 'kept', reason: 'r', from: 1 }]) })
+  const labels = renumbered.calls.map(c => c.label)
+  assert.ok(labels.includes('implement-1'))
+  assert.ok(!labels.includes('implement-2'))
+  // A kept task with no from at all is built, and its reason says why.
+  const noFrom = await run(replanArgs, { plan: keptPlan([{ n: 1, title: 'one', text: 'TASK ONE', disposition: 'kept', reason: 'r' }]) })
+  assert.ok(noFrom.calls.some(c => c.label === 'implement-1'))
+  assert.match(noFrom.prompt('final-review'), /names no earlier task in from/)
+  // Two kept tasks can't both claim the same finished task: the second is built.
+  const dup = await run(replanArgs, { plan: keptPlan([
+    { n: 1, title: 'one', text: 'TASK ONE', disposition: 'kept', reason: 'r', from: 1 },
+    { n: 2, title: 'one again', text: 'TASK ONE AGAIN', disposition: 'kept', reason: 'r', from: 1 }]) })
+  assert.ok(!dup.calls.some(c => c.label === 'implement-1'))
+  assert.ok(dup.calls.some(c => c.label === 'implement-2'))
+})
+
+test('a task kept by an earlier re-plan can be kept again through from', async () => {
+  const second = { ...replanArgs, replan: { ...replanArgs.replan, tasks: [{ task: 2, title: 'two', state: 'kept', reason: 'still right' }] } }
+  const { calls } = await run(second, { plan: keptPlan([{ n: 1, title: 'two', text: 'TASK TWO', disposition: 'kept', reason: 'r', from: 2 }]) })
+  assert.ok(!calls.some(c => c.label === 'implement-1'))
+})
+
+test('the re-plan schema requires from on no task', async () => {
+  const { calls } = await run(replanArgs, { plan: replanned })
+  const items = calls.find(c => c.label === 'plan').opts.schema.properties.tasks.items
+  assert.ok(!items.required.includes('from'))
+  assert.ok(items.properties.from)
 })
 
 test('a re-plan from the saved plan alone still accepts kept from the planner', async () => {
