@@ -46,6 +46,8 @@ const LENSES = ['correctness', 'security', 'data-integrity', 'quality', 'testing
 const TAGS = ['persistence', 'concurrency', 'auth', 'untrusted_input', 'tests_missing', 'config_only']
 const FINDING = obj({ file: str, line: int, headline: str, severity: SEVERITY, lens: str, mechanism: str, failure_scenario: str, fix: str })
 const FINDINGS = obj({ findings: arr(FINDING) })
+const CODEX_SCHEMA = FINDINGS // written into the runner's prompt as JSON text for --output-schema
+const CODEX_RUN = obj({ exit_code: int, output: str, stderr: str })
 const SCOUT = obj({ surfaces: arr(obj({ file: str, tags: arr(oneOf(TAGS)) })), lenses: arr(oneOf(LENSES)), full_pass: bool, reason: str })
 const CONSOLIDATED = obj({
   findings: arr(obj({ sources: arr(str), path: str, line: int, location: str, severity: SEVERITY, headline: str, lenses: arr(str),
@@ -240,6 +242,123 @@ const addRaw = (source, findings) => {
   list(findings).forEach((f, i) => raw.push({ ...f, id: `${source}-${i + 1}`, source }))
 }
 
+// ---- Codex ----
+
+// Adapted from adversarial-review.md in OpenAI's Codex plugin for Claude Code (Apache-2.0): the role, stance, attack
+// surface, method and finding bar are its; the output contract is this review's own schema.
+const codexPrompt = () => `${GOAL}
+
+<role>
+You are Codex performing an adversarial software review.
+Your job is to break confidence in the change, not to validate it.
+</role>
+
+<task>
+Review the pull request below as if you are trying to find the strongest reasons this change should not ship yet.
+</task>
+
+<operating_stance>
+Default to skepticism.
+Assume the change can fail in subtle, high-cost, or user-visible ways until the evidence says otherwise.
+Do not give credit for good intent, partial fixes, or likely follow-up work.
+If something only works on the happy path, treat that as a real weakness.
+</operating_stance>
+
+<attack_surface>
+Prioritize the kinds of failures that are expensive, dangerous, or hard to detect:
+- auth, permissions, tenant isolation, and trust boundaries
+- data loss, corruption, duplication, and irreversible state changes
+- rollback safety, retries, partial failure, and idempotency gaps
+- race conditions, ordering assumptions, stale state, and re-entrancy
+- empty-state, null, timeout, and degraded dependency behavior
+- version skew, schema drift, migration hazards, and compatibility regressions
+- observability gaps that would hide failure or make recovery harder
+</attack_surface>
+
+<review_method>
+Actively try to disprove the change.
+Look for violated invariants, missing guards, unhandled failure paths, and assumptions that stop being true under stress.
+Trace how bad inputs, retries, concurrent actions, or partially completed operations move through the code.
+</review_method>
+
+<finding_bar>
+Report only material findings.
+Do not include style feedback, naming feedback, low-value cleanup, or speculative concerns without evidence.
+A finding should answer:
+1. What can go wrong?
+2. Why is this code path vulnerable?
+3. What is the likely impact?
+4. What concrete change would reduce the risk?
+</finding_bar>
+
+<structured_output_contract>
+Return only valid JSON matching the provided schema, with no text around it.
+Keep the output compact and specific.
+Every finding has: file (repository-relative path), line (the line it is about, 0 for the whole file), headline (one line), severity (one of blocker, robustness, cleanup), lens (always "codex"), mechanism (the root cause), failure_scenario (a concrete sequence of input or state leading to the wrong result), fix (the concrete change).
+Use blocker for a defect that must not ship, robustness for data correctness or robustness, cleanup only for something that makes the code worse to change later. If the change looks safe, return {"findings": []}.
+</structured_output_contract>
+
+<grounding_rules>
+Be aggressive, but stay grounded.
+Every finding must be defensible from the repository context or tool outputs.
+Do not invent files, lines, code paths, incidents, attack chains, or runtime behavior you cannot support.
+If a conclusion depends on an inference, state that explicitly in the finding and keep it honest.
+</grounding_rules>
+
+<calibration_rules>
+Prefer one strong finding over several weak ones.
+Do not dilute serious issues with filler.
+If the change looks safe, say so directly and return no findings.
+</calibration_rules>
+
+<repository_context>
+${prInfo()}
+</repository_context>`
+
+const runnerPrompt = () => `You run one command for a review and hand back what it produced. You are not a reviewer: do not review anything, and never retry, fix, summarise or reword the output.
+
+1. Make a temporary directory with \`mktemp -d\`; call it <dir>.
+2. Write the text between the fences below, exactly as it is, to <dir>/prompt.md.
+3. Write this JSON, exactly as it is, to <dir>/schema.json:
+${JSON.stringify(CODEX_SCHEMA)}
+4. From the current directory, run \`codex exec -s read-only --output-schema <dir>/schema.json -o <dir>/out.json - < <dir>/prompt.md\` with the Bash timeout at its maximum, 600000 ms.
+5. Return exit_code: the command's exit status, or -1 if it timed out or couldn't start. Return output: the full contents of <dir>/out.json verbatim, or '' if it is missing. Return stderr: the last 20 lines of the command's error output.
+6. Remove <dir>.
+
+\`\`\`
+${codexPrompt()}
+\`\`\``
+
+const FINDING_TYPES = { file: isStr, line: Number.isInteger, headline: isStr, severity: v => Object.keys(SEV).includes(v), lens: isStr, mechanism: isStr, failure_scenario: isStr, fix: isStr }
+// The check that decides whether Codex contributes: its run is accepted only on exit 0 with output that parses
+// against the schema. Anything else is a reason, never findings.
+const codexFindings = r => {
+  if (r === null || r === undefined || typeof r !== 'object') return { reason: 'the Codex runner returned nothing' }
+  if (r.exit_code !== 0) {
+    const last = norm(r.stderr).split('\n').map(l => l.trim()).filter(Boolean).pop() || 'no error output'
+    return { reason: `codex exited with status ${r.exit_code}: ${last}` }
+  }
+  if (!isStr(r.output) || r.output.trim() === '') return { reason: 'codex returned empty output' }
+  let out
+  try { out = JSON.parse(r.output) } catch { return { reason: 'codex output is not JSON (cut short?)' } }
+  const ok = out && typeof out === 'object' && Array.isArray(out.findings)
+    && out.findings.every(x => x && typeof x === 'object' && Object.entries(FINDING_TYPES).every(([k, check]) => check(x[k])))
+  return ok ? { findings: out.findings } : { reason: 'codex output does not match the schema' }
+}
+
+// The runner's thunk for the lens fan-out, or null when Codex isn't available. It catches its own throw as null.
+const codexThunk = () => (args.codex.available
+  ? async () => { try { return await ag(runnerPrompt(), { label: 'codex', phase: 'Review', model: 'haiku', effort: 'low', schema: CODEX_RUN }) } catch { return null } }
+  : null)
+// Turns the runner's run into the review's codex status; a Codex failure never fails the run.
+const runCodex = run => {
+  if (!args.codex.available) return { ran: false, reason: `not available: ${args.codex.reason || 'no reason given'}`, findings: [] }
+  const r = codexFindings(run)
+  if (!r.findings) return { ran: false, reason: r.reason, findings: [] }
+  addRaw('codex', r.findings)
+  return { ran: true, reason: null, findings: r.findings }
+}
+
 const lensesFor = scout => {
   const picked = new Set([...(Array.isArray(scout.lenses) ? scout.lenses : []), 'correctness', ...(hasDesign() ? ['intent'] : [])])
   if (!hasDesign()) picked.delete('intent')
@@ -373,8 +492,10 @@ const main = async () => {
   const lensModel = name => (name === 'security' ? (tags.has('auth') || tags.has('untrusted_input') ? 'opus' : 'sonnet') : LENS_MODEL[name])
 
   const names = lensesFor(scout)
-  const found = await parallel(names.map(n => () => ag(lensPrompt(n), { label: `lens-${n}`, phase: 'Review', ...tier(lensModel(n)), schema: FINDINGS })))
+  const cx = codexThunk()
+  const found = await parallel([...names.map(n => () => ag(lensPrompt(n), { label: `lens-${n}`, phase: 'Review', ...tier(lensModel(n)), schema: FINDINGS })), ...(cx ? [cx] : [])])
   names.forEach((n, i) => addRaw(n, must(found[i], `lens-${n}`).findings))
+  const codex = runCodex(cx ? found[names.length] : null)
 
   const c = must(await ag(consolidatorPrompt(surfaces), { label: 'consolidator', phase: 'Consolidate', ...tier('opus'), schema: CONSOLIDATED }), 'consolidator')
   const { posted, droppedMinor } = toPost(c, { fullPass })
@@ -395,7 +516,7 @@ const main = async () => {
     resolve: [],
     unresolve: [],
   }
-  return result('done', { done, round: S.round, full_pass: fullPass, open, review })
+  return result('done', { done, round: S.round, full_pass: fullPass, open, review, codex: { ran: codex.ran, reason: codex.reason } })
 }
 
 try { return await main() } catch (e) { return result('failed', { stage: (e && e.stage) || lastLabel, error: String((e && e.message) || (e && e.stage) || e) }) }

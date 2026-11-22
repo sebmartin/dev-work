@@ -35,10 +35,12 @@ const defaults = {
   scout: () => ({ surfaces: [{ file: 'a.js', tags: ['persistence'] }], lenses: ['correctness', 'quality'], full_pass: false, reason: '' }),
   lens: () => ({ findings: [] }),
   consolidator: () => empty,
+  codex: () => ({ exit_code: 0, output: JSON.stringify({ findings: [] }), stderr: '' }),
 }
 // A consolidated finding, and a raw finding as a lens returns it.
 const f = over => ({ sources: ['correctness-1'], path: 'a.js', line: 3, location: 'a.js:3', severity: 'robustness', headline: 'H', lenses: ['correctness'], verdict: 'CONFIRMED', mechanism: 'M', failure_scenario: 'FS', fix: 'FX', in_fixes: false, post: false, ...over })
 const rawF = over => ({ file: 'a.js', line: 3, headline: 'H', severity: 'robustness', lens: 'correctness', mechanism: 'M', failure_scenario: 'FS', fix: 'FX', ...over })
+const cx = over => ({ file: 'a.js', line: 3, headline: 'H', severity: 'robustness', lens: 'codex', mechanism: 'M', failure_scenario: 'FS', fix: 'FX', ...over })
 const kind = label => (label.startsWith('lens-') ? 'lens' : label)
 
 async function run(args, overrides = {}) {
@@ -220,4 +222,37 @@ test('the lenses see the diff range, the PR text and the design, and never a pla
   const { prompt } = await run(pr1)
   for (const x of [`git diff ${sha('b')} ${sha('c')}`, 'PR-BODY', 'THE-DESIGN']) assert.ok(prompt('lens-correctness').includes(x), x)
   assert.doesNotMatch(prompt('lens-correctness'), /implementation-plan/)
+})
+
+test('codex runs beside the lenses in round 1 and its findings go to the consolidator', async () => {
+  const { prompt, result } = await run(pr1, { codex: () => ({ exit_code: 0, output: JSON.stringify({ findings: [cx({ headline: 'CODEX-SAYS' })] }), stderr: '' }) })
+  assert.match(prompt('consolidator'), /codex-1 \(.*codex\): CODEX-SAYS/); assert.deepEqual(result.codex, { ran: true, reason: null })
+})
+test('the codex runner is told the exact command, the prompt with the goal and design, and the schema', async () => {
+  const { prompt, calls } = await run(pr1)
+  for (const x of ['codex exec -s read-only --output-schema', ' -o ', GOAL_TEXT, 'THE-DESIGN', '"additionalProperties":false']) assert.ok(prompt('codex').includes(x), x)
+  assert.ok(calls.find(c => c.label === 'codex').opts.schema.required.includes('exit_code'))
+})
+test('every way codex can fail leaves the same lenses and a complete review, with the reason', async () => {
+  const cases = [
+    [{ ...pr1, codex: { available: false, reason: 'not signed in' } }, {}, /not signed in/],
+    [pr1, { codex: () => null }, /returned nothing/],
+    [pr1, { codex: () => { throw new Error('boom') } }, /returned nothing/],
+    [pr1, { codex: () => ({ exit_code: 1, output: '', stderr: 'You have hit your usage limit' }) }, /status 1.*usage limit/],
+    [pr1, { codex: () => ({ exit_code: 0, output: '', stderr: '' }) }, /empty/],
+    [pr1, { codex: () => ({ exit_code: 0, output: '{"findings":[{"file":"a.js"', stderr: '' }) }, /not JSON/],
+  ]
+  for (const [args, over, why] of cases) {
+    const { result, calls } = await run(args, over)
+    assert.equal(result.status, 'done'); assert.equal(result.codex.ran, false); assert.match(result.codex.reason, why)
+    assert.deepEqual(calls.filter(c => c.label.startsWith('lens-')).map(c => c.label).sort(), ['lens-correctness', 'lens-intent', 'lens-quality'])
+  }
+})
+test('codex output that is valid JSON but missing required finding fields contributes nothing', async () => {
+  const { result, prompt } = await run(pr1, { codex: () => ({ exit_code: 0, output: JSON.stringify({ findings: [{ file: 'a.js', headline: 'half' }] }), stderr: '' }) })
+  assert.equal(result.codex.ran, false); assert.match(result.codex.reason, /schema/); assert.doesNotMatch(prompt('consolidator'), /half/)
+})
+test('codex that is unavailable never starts its runner', async () => {
+  const { calls } = await run({ ...pr1, codex: { available: false, reason: 'not installed' } })
+  assert.ok(!calls.some(c => c.label === 'codex'))
 })
