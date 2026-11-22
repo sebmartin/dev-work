@@ -433,6 +433,22 @@ test('a run with nothing new reports the last round and the threads still open, 
   const { result } = await run(same)
   assert.deepEqual([result.round, result.done, result.open], [1, false, { blocking: 0, should_fix: 1 }])
 })
+test('a review done with threads still open reports them, and the ones parked for a person, when it skips', async () => {
+  const parked = thread('T2', '🔴 **B** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: '**Needs a person:** the user and the code disagree <!-- dev-work:review round=2 -->', at: 2 }])
+  const doneOpen = { ...later, reviews: [review(1, { full: true, at: 1 }), review(2, { at: 2, done: true })],
+    threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: '**Still open:** no <!-- dev-work:review round=2 -->', at: 2 }]), parked] }
+  const { result, calls } = await run(doneOpen)
+  assert.equal(calls.length, 0); assert.equal(result.done, true); assert.equal(result.round, 2)
+  assert.deepEqual(result.open, { blocking: 1, should_fix: 1 })
+  assert.deepEqual(result.needs_human, [{ thread: 'T2', url: parked.url, why: 'the user and the code disagree' }])
+})
+test('a last round with no usable commit reviews the whole PR diff and never counts as nothing new', async () => {
+  for (const commit of [null, '', 'aaaaaaa']) {
+    const odd = { ...later, pr: { ...later.pr, head: sha('a') }, reviews: [review(1, { full: true, at: 1, commit })], threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [])] }
+    const { prompt } = await run(odd)
+    assert.ok(prompt('fix-review').includes(`\`git diff ${sha('b')} ${sha('a')}\` is what changed since round 1`), String(commit))
+  }
+})
 test('a reply whose time cannot be read counts as new, so the round runs', async () => {
   const same = { ...later, pr: { ...later.pr, head: sha('a') } }
   same.threads = [{ ...same.threads[0], comments: [same.threads[0].comments[0], { ...same.threads[0].comments[1], created_at: null }] }]

@@ -10,6 +10,9 @@ export const meta = {
 //   logins:       the user's GitHub logins, non-empty
 //   design:       the design text, '' when there is none
 //   reviews:      [{ id, author, body, commit: sha40|null, state, submitted_at: ISO|null }]
+//                 commit is the full head SHA the review was submitted on (GitHub's commit_id). Anything else is read
+//                 as unknown: the change since that round is then the whole PR diff, and the run never skips as
+//                 "nothing new".
 //   threads:      [{ id, url, path, line, resolved, comments: [{ id, author, body, created_at, url }] }]
 //   since_fetched: the last round's review commit was fetched into the worktree
 //   codex:        { available: bool, reason: string }
@@ -86,11 +89,11 @@ const result = (status, extra = {}) => ({
 const isStr = v => typeof v === 'string'
 const list = v => (Array.isArray(v) ? v.filter(x => x && typeof x === 'object') : [])
 const norm = s => (isStr(s) ? s : '').replace(/\r\n/g, '\n')
+const SHA40 = /^[0-9a-f]{40}$/
 const inputsOk = a => {
   try {
-    const sha40 = /^[0-9a-f]{40}$/
     const p = a.pr
-    return Number.isInteger(p.number) && isStr(p.head) && sha40.test(p.head) && isStr(p.base) && sha40.test(p.base)
+    return Number.isInteger(p.number) && isStr(p.head) && SHA40.test(p.head) && isStr(p.base) && SHA40.test(p.base)
       && isStr(p.repo) && isStr(p.url) && isStr(p.title) && isStr(p.body) && Array.isArray(p.files)
       && Array.isArray(a.logins) && a.logins.length > 0 && a.logins.every(l => isStr(l) && l !== '')
       && isStr(a.design) && Array.isArray(a.reviews) && Array.isArray(a.threads)
@@ -647,7 +650,7 @@ const main = async () => {
     .filter(r => r && r.submitted_at && !Number.isNaN(Date.parse(r.submitted_at)) && REVIEW_RE.test(norm(r.body)))
     .map(r => {
       const b = norm(r.body)
-      return { round: Number(b.match(REVIEW_RE)[1]), commit: r.commit || null, at: Date.parse(r.submitted_at), full: FULL_RE.test(b), done: DONE_RE.test(b) }
+      return { round: Number(b.match(REVIEW_RE)[1]), commit: isStr(r.commit) && SHA40.test(r.commit) ? r.commit : null, at: Date.parse(r.submitted_at), full: FULL_RE.test(b), done: DONE_RE.test(b) }
     })
     .sort((x, y) => x.at - y.at)
   const last = rounds.length ? rounds[rounds.length - 1] : null
