@@ -299,6 +299,11 @@ test('a second pushback in the same thread becomes needs a person and stops bloc
   assert.match(result.review.replies[0].body, /^\*\*Needs a person:\*\*/)
   assert.deepEqual(result.needs_human.map(n => n.thread), ['T1']); assert.equal(result.done, true)
 })
+test('a second pushback is caught even when a Still open reply came between the two', async () => {
+  const mid = { ...later, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: '**Pushback:** y <!-- dev-work:review round=2 -->', at: 3 }, { author: 'seb', body: '**Still open:** z <!-- dev-work:review round=3 -->', at: 4 }, { author: 'seb', body: 'Not changed: x <!-- dev-work:develop round=3 -->', at: 5 }])] }
+  const { result } = await run({ ...mid, reviews: [...mid.reviews, review(3, { at: 4, commit: sha('a') })] }, { verifier: () => ({ threads: [v('T1', 'push_back', 'decline', 'a.js:2', 'Both hold.')] }) })
+  assert.match(result.review.replies[0].body, /^\*\*Needs a person:\*\*/)
+})
 test('a first pushback replies with pushback and keeps the thread open', async () => {
   const { result } = await run(later, { verifier: () => ({ threads: [v('T1', 'push_back', 'decline', 'a.js:2', 'The reasoning misses the retry.')] }) })
   assert.match(result.review.replies[0].body, /^\*\*Pushback:\*\* The reasoning/); assert.equal(result.done, false)

@@ -313,8 +313,7 @@ const applyVerdicts = vs => {
       if (!byUser && !(isStr(v.evidence) && EVIDENCE_RE.test(v.evidence))) action = 'none'
     }
     if (action === 'push_back') {
-      const r = latestReviewerReply(t)
-      if (r !== null && r.startsWith(PUSHBACK)) action = 'needs_person'
+      if (t.comments.slice(1).some(c => c.kind === 'reviewer' && norm(c.body).trimStart().startsWith(PUSHBACK))) action = 'needs_person'
     }
     const s = says(t, action)
     let state = priorState(t)
