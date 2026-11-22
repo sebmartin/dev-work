@@ -94,6 +94,7 @@ const inputsOk = a => {
   try {
     const p = a.pr
     return Number.isInteger(p.number) && isStr(p.head) && SHA40.test(p.head) && isStr(p.base) && SHA40.test(p.base)
+      && (isStr(p.author) || p.author === null) && isStr(a.reviewer) && a.reviewer !== ''
       && isStr(p.repo) && isStr(p.url) && isStr(p.title) && isStr(p.body) && Array.isArray(p.files)
       && Array.isArray(a.logins) && a.logins.length > 0 && a.logins.every(l => isStr(l) && l !== '')
       && isStr(a.design) && Array.isArray(a.reviews) && Array.isArray(a.threads)
@@ -109,9 +110,9 @@ const since = () => (S.last && S.last.commit && args.since_fetched ? S.last.comm
 // included. A full pass restarts the count.
 const roundsSince = () => {
   if (S.fullPass) return 1
-  const fulls = S.rounds.filter(r => r.full).map(r => r.at)
+  const fulls = S.rounds.filter(r => r.full).map(r => r.created)
   const anchor = Math.max(S.userReplyAt === null ? -Infinity : S.userReplyAt, ...fulls, -Infinity)
-  return 1 + S.rounds.filter(r => r.at >= anchor).length
+  return 1 + S.rounds.filter(r => r.created >= anchor).length
 }
 const sinceText = () => `## The change since the last round
 
@@ -297,9 +298,10 @@ Each finding is posted as an inline comment in the format: a first line with the
 - path and line: where the comment goes. Anchor it on the changed line that causes the problem. A finding about an effect outside the diff (a caller the pull request didn't touch, a doc it left stale) goes on the changed line that causes the effect, which nearly always exists; failing that, set line 0 for a file-level comment on the most closely related changed file.
 - location: the file:line the headline shows, where the problem is; it may be outside the diff.
 - headline: one line naming the problem.
-- mechanism: why it's wrong, the root cause with evidence: cite the lines that prove it ("verified: \`grep -c foo lock\` gives 0", "the override is at \`client.py:16-22\`"). Concrete beats confident.
-- failure_scenario: a concrete, specific sequence where it bites in practice, required for blocker and robustness. Not "this could fail" but which input or state leads to which wrong result. For a cleanup finding it may be empty.
-- fix: the concrete change, with a short snippet when it helps, pointing at the pattern already in the repository when there is one.
+- mechanism: why it's wrong, the root cause with evidence. Cite the one or two lines that prove it, in a sentence or two, and don't walk the call chain hop by hop with a link for each.
+- failure_scenario: one concrete case where it bites: which input or state leads to which wrong result. Required for blocker and robustness; for a cleanup finding it may be empty. Give one case, not a second or a simpler variant.
+- fix: the change in a sentence or two, pointing at the pattern already in the repository when there is one. Include code only when it is shorter than explaining it, and don't say which tests to write; that is the author's call.
+- Keep each comment short enough to read at a glance. Don't restate in one part a point already made in another. Cut anything whose removal loses nothing real, and don't pad to reach a length or trim a real point to fit one.
 - in_fixes: ${laterRound()
     ? 'true when the problem is in the change since the last round, false when it is in code that change didn\'t touch. A source\'s in_fixes is a first guess: set the one the code supports.'
     : 'false; this round reviews the whole pull request.'}
@@ -323,24 +325,37 @@ const repliedAfterReviewer = t => {
   const i = t.comments.map(c => c.kind).lastIndexOf('reviewer')
   return t.comments.slice(i + 1).length > 0
 }
+// True when a person (the user or anyone else, not develop) commented after the reviewer's latest comment.
+const personAfterReviewer = t => {
+  const i = t.comments.map(c => c.kind).lastIndexOf('reviewer')
+  return t.comments.slice(i + 1).some(c => c.kind === 'user' || c.kind === 'human')
+}
+const userAfterReviewer = t => {
+  const i = t.comments.map(c => c.kind).lastIndexOf('reviewer')
+  return t.comments.slice(i + 1).some(c => c.kind === 'user')
+}
 const priorState = t => {
   const r = latestReviewerReply(t)
   if (r !== null) {
     if (r.startsWith(SETTLED) || r.startsWith(NEEDS)) {
-      // A reply after a settled or parked thread reopens it until the verifier has read the reply.
-      if (repliedAfterReviewer(t)) return 'open'
+      // A person's reply after a settled or parked thread reopens it until the verifier has read the reply. develop's
+      // replies and the reviewer's own comments don't.
+      if (personAfterReviewer(t)) return 'open'
       return r.startsWith(SETTLED) ? 'closed' : 'needs_person'
     }
     if (r.startsWith(STILL) || r.startsWith(PUSHBACK)) return 'open'
   }
-  return t.resolved ? 'closed' : 'open'
+  // Resolved by someone else without a settled reply from the reviewer: not closed until the verifier accepts it
+  // with evidence, so a missing or weak answer leaves it open.
+  return 'open'
 }
 // Reviewer threads to check this round: any with a comment after the reviewer's latest one (so a reply after a
 // settled or parked thread is read), then unresolved ones not settled or parked, and resolved ones (by anyone) with no
 // settled reply from the reviewer.
 const toVerify = () => S.reviewerThreads.filter(t => {
-  if (repliedAfterReviewer(t)) return true
   const r = latestReviewerReply(t)
+  const parked = r !== null && (r.startsWith(SETTLED) || r.startsWith(NEEDS))
+  if (repliedAfterReviewer(t) && (!parked || personAfterReviewer(t))) return true
   if (r !== null && r.startsWith(SETTLED)) return false
   if (!t.resolved && r !== null && r.startsWith(NEEDS)) return false
   return t.resolved ? true : priorState(t) !== 'closed'
@@ -419,6 +434,13 @@ const applyVerdicts = vs => {
       needs(t, s.reply)
       state = 'needs_person'
     } else action = 'none'
+    if (action === 'none') {
+      // Nothing asked for: a settled or parked thread stays where it was, unless the user's own reply says to fix it.
+      const r = latestReviewerReply(t)
+      if (r !== null && r.startsWith(SETTLED) && !userAfterReviewer(t)) state = 'closed'
+      else if (r !== null && r.startsWith(NEEDS) && !userAfterReviewer(t)) state = 'needs_person'
+      else if (r !== null && r.startsWith(SETTLED) && S.mine && t.resolved && state === 'open') out.unresolve.push(t.id)
+    }
     if (action === 'none' && state === 'needs_person') needs(t, stripMarks(latestReviewerReply(t) || '').slice(NEEDS.length).trim())
     out.states.push({ severity: t.severity, state, nonblocking: t.nonblocking })
   }
@@ -649,9 +671,11 @@ const main = async () => {
   const { pr, logins, reviews, threads } = args
   if (reviews.some(r => r && r.state === 'PENDING')) return result('failed', { stage: 'pending review', error: 'A pending review is waiting on this pull request; submit or delete it first.' })
 
+  // The reviewer's marker counts only from the accounts the review posts as; anyone can type the marker.
+  const byReviewer = a => a === args.reviewer || logins.includes(a)
   const who = c => {
     const b = norm(c.body)
-    return REVIEW_RE.test(b) ? 'reviewer' : DEVELOP_RE.test(b) ? 'develop' : logins.includes(c.author) ? 'user' : 'human'
+    return REVIEW_RE.test(b) && byReviewer(c.author) ? 'reviewer' : DEVELOP_RE.test(b) ? 'develop' : logins.includes(c.author) ? 'user' : 'human'
   }
   const sevOf = body => {
     const t = norm(body).trimStart()
@@ -659,10 +683,10 @@ const main = async () => {
   }
 
   const rounds = reviews
-    .filter(r => r && r.submitted_at && !Number.isNaN(Date.parse(r.submitted_at)) && REVIEW_RE.test(norm(r.body)))
+    .filter(r => r && r.submitted_at && !Number.isNaN(Date.parse(r.submitted_at)) && byReviewer(r.author) && REVIEW_RE.test(norm(r.body)))
     .map(r => {
       const b = norm(r.body)
-      return { round: Number(b.match(REVIEW_RE)[1]), commit: isStr(r.commit) && SHA40.test(r.commit) ? r.commit : null, at: Date.parse(r.submitted_at), full: FULL_RE.test(b), done: DONE_RE.test(b) }
+      return { round: Number(b.match(REVIEW_RE)[1]), commit: isStr(r.commit) && SHA40.test(r.commit) ? r.commit : null, at: Date.parse(r.submitted_at), created: Date.parse(r.created_at) <= Date.parse(r.submitted_at) ? Date.parse(r.created_at) : Date.parse(r.submitted_at), full: FULL_RE.test(b), done: DONE_RE.test(b) }
     })
     .sort((x, y) => x.at - y.at)
   const last = rounds.length ? rounds[rounds.length - 1] : null
@@ -692,14 +716,14 @@ const main = async () => {
     const now = applyVerdicts([])
     return { round: S.last.round, open: openCounts(now.states), needs_human: now.needsHuman }
   }
-  if (S.last && S.last.done && !(S.userReplyAt > S.last.at)) {
+  if (S.last && S.last.done && !(S.userReplyAt > S.last.created)) {
     return result('done', { ...standing(), done: true, skipped: 'The review is already done; nothing was posted.' })
   }
   // Nothing new: the same head as the last round and no reply in the reviewer's threads since it. A reply whose time
   // can't be read counts as new, so a reply is never skipped.
   const newReply = S.last && S.reviewerThreads.some(t => t.comments.some(c => {
     const at = Date.parse(c.created_at)
-    return c.kind !== 'reviewer' && (Number.isNaN(at) || at > S.last.at)
+    return c.kind !== 'reviewer' && (Number.isNaN(at) || at > S.last.created)
   }))
   if (S.last && pr.head === S.last.commit && !newReply) {
     return result('done', { ...standing(), skipped: `nothing new since round ${S.last.round}: no new commit and no reply in the reviewer's threads; nothing was posted` })

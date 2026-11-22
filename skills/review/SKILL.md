@@ -27,8 +27,8 @@ When the file is missing or empty, use the active account: `gh api user --jq '.l
 
 - `gh pr view <n> --json number,url,title,body,author,headRefName,headRefOid,baseRefOid,isCrossRepository`.
 - The changed files with a paginated call, because `gh pr view --json files` stops at 100: `gh api repos/<owner>/<repo>/pulls/<n>/files --paginate --jq '.[].filename'`. These paths are `files` in `args.pr`.
-- Reviews and review threads with `gh api graphql --paginate`. Reviews: `id`, `author{login}`, `body`, `commit{oid}`, `state`, `submittedAt`. Review threads: `id`, `isResolved`, `path`, `line`, `comments{ id, author{login}, body, createdAt, url }`.
-- Map them to the `args` field names: reviews `{ id, author, body, commit, state, submitted_at }`, where `commit` is the head SHA the review was submitted on (null when there isn't one), and threads `{ id, url, path, line, resolved, comments: [{ id, author, body, created_at, url }] }`, with `url` the first comment's url. An author that is null (a deleted account) stays null.
+- Reviews and review threads with `gh api graphql --paginate`. Reviews: `id`, `author{login}`, `body`, `commit{oid}`, `state`, `submittedAt`, `createdAt`. Review threads: `id`, `isResolved`, `path`, `line`, `comments{ id, author{login}, body, createdAt, url }`.
+- Map them to the `args` field names: reviews `{ id, author, body, commit, state, submitted_at, created_at }` (`created_at` is the review's `createdAt`, when it was written, which on a draft is earlier than `submitted_at`), where `commit` is the head SHA the review was submitted on (null when there isn't one), and threads `{ id, url, path, line, resolved, comments: [{ id, author, body, created_at, url }] }`, with `url` the first comment's url. Every author, of the PR, reviews and comments, is the account's login string (`author.login`), never the object `gh` returns; one that is null (a deleted account) stays null.
 
 ## 2. Find the design
 
@@ -58,8 +58,9 @@ Run `command -v codex` and `codex login status`. `codex` is `{ available, reason
 
 Note the session's start time, then launch `dev-work:review-wf` with exactly these `args` fields:
 
-- `pr`: `{ number, url, repo: 'owner/name', title, body, author, head: headRefOid, base: <the merge base>, files: [every changed path, from the paginated call in step 1] }`
+- `pr`: `{ number, url, repo: 'owner/name', title, body, author: author.login, head: headRefOid, base: <the merge base>, files: [every changed path, from the paginated call in step 1] }`
 - `logins`
+- `reviewer`: the active account's login (`gh api user --jq .login`); the workflow accepts its marker only from this account and the user's logins
 - `design`
 - `reviews`
 - `threads`
