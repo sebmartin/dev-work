@@ -89,13 +89,13 @@ In a few lines:
 
 - the round, and what it found or settled;
 - whether Codex ran and, if not, why (`codex.reason`);
-- where the review stands, in the summary's words: another round is needed (with what is open), or nothing is left to address. Never say the review is "done" or "not done": the round has just finished, and the word doesn't say which;
+- the verdict, in the summary's words: another round is needed (with what is open), only threads that need a person are left, or nothing is left to address and merging is recommended. When `auto_rounds_left` is 0, say later rounds wait for the user. Never say the review is "done" or "not done": the round has just finished, and the word doesn't say which;
 - each `needs_human` entry with its thread link;
 - the review's link, and whether it was submitted or saved as a draft for the user to read and submit;
-- `skipped`, when nothing was posted;
+- `skipped`, when the status is `no_change` and nothing was posted, together with the open counts the result gives;
 - the cost: the duration the session measured, and `output_tokens`.
 
-Then one line of JSON: `{ done, round, full_pass, open, needs_human }`. A `failed` result reports its `stage` and `error`.
+Then one line of JSON: `{ status, verdict, round, full_pass, auto_rounds_left, open, needs_human }`, with `verdict` only when `status` is `reviewed`. A `failed` result reports its `stage` and `error`.
 
 ## 10. Leave
 
