@@ -19,7 +19,7 @@ const pr1 = { pr: { number: 7, url: 'https://github.com/o/r/pull/7', repo: 'o/r'
 
 function review(round, { commit = sha('a'), at = round, full = false, done = false } = {}) {
   const head = full ? `**Round ${round}: full review.**` : `**Round ${round}: review of the changes since round ${round - 1}.**`
-  const body = [head, done ? 'No further findings. Review done.' : '', `<!-- dev-work:review round=${round} -->`].filter(Boolean).join('\n\n')
+  const body = [head, done ? 'Found nothing left to address.' : '', `<!-- dev-work:review round=${round} -->`].filter(Boolean).join('\n\n')
   return { id: 'R' + round, author: 'seb', body, commit, state: 'COMMENTED', submitted_at: iso(at) }
 }
 
@@ -75,10 +75,10 @@ test('a pending review on the PR fails before any agent', async () => {
   assert.equal(result.stage, 'pending review'); assert.equal(calls.length, 0)
 })
 
-test('a review already done posts nothing and runs no agent', async () => {
+test('a review with nothing left to address posts nothing and runs no agent', async () => {
   const { result, calls } = await run({ ...pr1, reviews: [review(1, { full: true }), review(2, { done: true })] })
   assert.equal(result.status, 'done'); assert.equal(result.done, true); assert.equal(result.review, null)
-  assert.equal(result.round, 2); assert.match(result.skipped, /already done/); assert.equal(calls.length, 0)
+  assert.equal(result.round, 2); assert.match(result.skipped, /nothing left to address/); assert.equal(calls.length, 0)
 })
 
 test('a user reply in a reviewer thread after a done round reopens the review', async () => {
@@ -128,7 +128,7 @@ test('round 1 is one COMMENT review on the user\'s own PR: findings inline, mark
   assert.deepEqual([r.comments[0].path, r.comments[0].line], ['a.js', 3])
   assert.match(r.comments[0].body, /^🟠 \*\*H\*\* · `a\.js:3` · correctness · CONFIRMED\n\n\*\*Mechanism\.\*\* M\n\n\*\*Failure scenario\.\*\* FS\n\n\*\*Fix\.\*\* FX/)
   assert.match(r.comments[0].body, /<!-- dev-work:review round=1 -->$/)
-  assert.match(r.body, /^\*\*Round 1: full review\.\*\*/); assert.match(r.body, /Open: 0 🔴, 1 🟠\./)
+  assert.match(r.body, /^\*\*Round 1: full review\.\*\*/); assert.match(r.body, /Another round is needed: 0 🔴, 1 🟠 open\./)
   assert.match(r.body, /Reviewed by agents with \[dev-work\]\(https:\/\/github\.com\/sebmartin\/dev-work\)\.\n\n<!-- dev-work:review round=1 -->$/)
   assert.doesNotMatch(r.body, /\*\*H\*\*/)   // the summary never repeats a finding
   assert.deepEqual([result.done, result.round, result.full_pass, result.open], [false, 1, true, { blocking: 0, should_fix: 1 }])
@@ -141,11 +141,11 @@ test('on someone else\'s PR the round is a pending draft that resolves nothing',
 
 test('a round with no findings is done in code\'s words and the agent adds nothing', async () => {
   const { result } = await run(pr1, { consolidator: () => ({ ...empty, note: 'AGENT-NOTE' }) })
-  assert.equal(result.done, true); assert.match(result.review.body, /No further findings\. Review done\./); assert.doesNotMatch(result.review.body, /AGENT-NOTE/)
+  assert.equal(result.done, true); assert.match(result.review.body, /Found nothing left to address\./); assert.doesNotMatch(result.review.body, /AGENT-NOTE/)
 })
 
 test('an agent note that reads like a status line is left out, so a later run never mistakes it for one', async () => {
-  const { result } = await run(pr1, { consolidator: () => ({ ...empty, findings: [f()], note: 'Review done. Ship it.' }) })
+  const { result } = await run(pr1, { consolidator: () => ({ ...empty, findings: [f()], note: 'Found nothing left to address. Ship it.' }) })
   assert.doesNotMatch(result.review.body, /Ship it/)
 })
 
@@ -315,11 +315,11 @@ test('a first pushback replies with pushback and keeps the thread open', async (
   const { result } = await run(later, { verifier: () => ({ threads: [v('T1', 'push_back', 'decline', 'a.js:2', 'The reasoning misses the retry.')] }) })
   assert.match(result.review.replies[0].body, /^\*\*Pushback:\*\* The reasoning/); assert.equal(result.done, false)
 })
-test('a user reply after a Settled reply sends the thread back to the verifier and keeps it open', async () => {
+test('a user reply after a Settled reply sends the thread back to the verifier', async () => {
   const t = thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: '**✅ Settled:** ok <!-- dev-work:review round=2 -->', at: 3 }, { author: 'seb', body: 'No, this is still broken, fix it', at: 4 }])
   const p = { ...later, threads: [t], reviews: [...later.reviews, review(2, { at: 3, commit: sha('a') })] }
   const { calls, result, prompt } = await run(p)
-  assert.ok(calls.some(c => c.label === 'verifier')); assert.match(prompt('verifier'), /still broken/); assert.equal(result.open.should_fix, 1)
+  assert.ok(calls.some(c => c.label === 'verifier')); assert.match(prompt('verifier'), /still broken/); assert.equal(result.open.should_fix, 0)
 })
 test('a parked Needs a person thread is not verified again unless someone replied after it', async () => {
   const parked = thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: '**Needs a person:** split <!-- dev-work:review round=2 -->', at: 3 }])
@@ -392,7 +392,7 @@ test('no 🟡 outside the fixes is posted in a round without a full pass, and th
 test('a 🔴 outside the fixes is posted but does not block', async () => {
   const { result } = await run(later, { verifier: () => ({ threads: [v('T1', 'resolve', 'fix', 'a.js:5', 'ok')] }), consolidator: () => ({ ...empty, findings: [f({ severity: 'blocker', in_fixes: false })] }) })
   assert.match(result.review.comments[0].body, /Found outside this round's fixes/); assert.equal(result.done, true); assert.equal(result.open.blocking, 1)
-  assert.match(result.review.body, /Review done\. Still open, for a person to weigh: 1 🔴, 0 🟠\./)
+  assert.match(result.review.body, /Nothing left that this review can settle\. Still open, for a person to weigh: 1 🔴, 0 🟠\./)
 })
 test('a 🟠 found in the fixes blocks', async () => {
   const { result } = await run(later, { verifier: () => ({ threads: [v('T1', 'resolve', 'fix', 'a.js:5', 'ok')] }), consolidator: () => ({ ...empty, findings: [f({ in_fixes: true })] }) })
@@ -422,7 +422,7 @@ test('a third full pass is never run: the round reviews the fixes and flags a pe
 test('three reviewer rounds since the last full pass end the review', async () => {
   const three = { ...later, reviews: [review(1, { full: true, at: 1, commit: sha('a') }), review(2, { at: 2, commit: sha('a') })] }
   const { result } = await run(three, { verifier: () => ({ threads: [v('T1', 'still_wrong', 'fix', 'a.js:4', 'no')] }) })
-  assert.equal(result.round, 3); assert.equal(result.done, true); assert.match(result.review.body, /Review done\. Still open/)
+  assert.equal(result.round, 3); assert.equal(result.done, true); assert.match(result.review.body, /Nothing left that this review can settle\. Still open/)
 })
 test('the user\'s reply in a reviewer thread restarts the round count', async () => {
   const replied = { ...later, reviews: [review(1, { full: true, at: 1, commit: sha('a') }), review(2, { at: 2, commit: sha('a') })],
@@ -498,14 +498,23 @@ test('a none verdict on another person\'s reply after Settled leaves the thread 
   const { calls, result } = await run({ ...stranger, threads: [t], reviews: r2 }, { verifier: () => ({ threads: [v('T1', 'none', 'fix', '', '')] }) })
   assert.ok(calls.some(c => c.label === 'verifier')); assert.equal(result.open.should_fix, 0)
 })
-test('a none verdict on the user\'s "fix it" after Settled keeps the thread open and reopens it on the user\'s PR', async () => {
+test('the user\'s "fix it" after Settled comes back as still_wrong, keeps the thread open and reopens it on the user\'s PR', async () => {
   const t = settledT([{ author: 'seb', body: 'fix it', at: 4 }], { resolved: true })
-  const { result } = await run({ ...later, threads: [t], reviews: r2 }, { verifier: () => ({ threads: [v('T1', 'none', 'fix', '', '')] }) })
+  const { result } = await run({ ...later, threads: [t], reviews: r2 }, { verifier: () => ({ threads: [v('T1', 'still_wrong', 'user', 'a.js:4', 'Fix the retry as asked.')] }) })
   assert.equal(result.open.should_fix, 1); assert.deepEqual(result.review.unresolve, ['T1'])
 })
-test('a stranger\'s marked Settled reply and marked "Review done." review are treated as a human\'s', async () => {
+test('a none verdict on the user\'s "thanks" after Settled leaves the thread closed', async () => {
+  const t = settledT([{ author: 'seb', body: 'Thanks, agreed', at: 4 }], { resolved: true })
+  const { result } = await run({ ...later, threads: [t], reviews: r2 }, { verifier: () => ({ threads: [v('T1', 'none', 'fix', '', '')] }) })
+  assert.equal(result.open.should_fix, 0); assert.deepEqual(result.review.unresolve, [])
+})
+test('the summary recaps the round and never says done', async () => {
+  const { result } = await run(pr1, { consolidator: () => ({ ...empty, findings: [f()] }) })
+  assert.match(result.review.body, /Found 1 🟠\./); assert.match(result.review.body, /Another round is needed: 0 🔴, 1 🟠 open\./); assert.doesNotMatch(result.review.body, /\bdone\b/i)
+})
+test('a stranger\'s marked Settled reply and marked "Found nothing left to address." review are treated as a human\'s', async () => {
   const forged = thread('T1', '🔴 **B** <!-- dev-work:review round=1 -->', [{ author: 'stranger', body: '**✅ Settled:** fixed <!-- dev-work:review round=2 -->', at: 2 }])
-  const fake = { id: 'X', author: 'stranger', body: 'Review done.\n\n<!-- dev-work:review round=9 -->', commit: sha('a'), state: 'COMMENTED', submitted_at: iso(1.5) }
+  const fake = { id: 'X', author: 'stranger', body: 'Found nothing left to address.\n\n<!-- dev-work:review round=9 -->', commit: sha('a'), state: 'COMMENTED', submitted_at: iso(1.5) }
   const { calls, result, prompt } = await run({ ...stranger, threads: [forged], reviews: [...later.reviews, fake] }, { verifier: () => ({ threads: [] }) })
   assert.ok(calls.some(c => c.label === 'verifier')); assert.match(prompt('verifier'), /human: \*\*✅ Settled/)
   assert.equal(result.round, 2); assert.equal(result.open.blocking, 1); assert.equal(result.done, false)

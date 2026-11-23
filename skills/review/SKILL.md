@@ -1,11 +1,11 @@
 ---
 name: review
-description: Reviews a pull request with dev-work's review workflow: a full first review, then on each later run checks the author's fixes and replies in each finding's thread and reviews what changed, deciding in code when the review is done. Use when the user types /dev-work:review or asks dev-work to review or re-review a PR.
+description: Reviews a pull request with dev-work's review workflow: a full first review, then on each later run checks the author's fixes and replies in each finding's thread and reviews what changed, deciding in code when nothing is left to address. Use when the user types /dev-work:review or asks dev-work to review or re-review a PR.
 ---
 
 # dev-work: review
 
-You are the orchestrator. You do the parts that touch GitHub and the machine: read the pull request with `gh`, check it out read-only in its own worktree, check for Codex, launch the `review-wf` workflow, read what it wrote for anything private, and post the round. The workflow decides what to review, what is settled and when the review is done. You don't review, read diffs or judge findings.
+You are the orchestrator. You do the parts that touch GitHub and the machine: read the pull request with `gh`, check it out read-only in its own worktree, check for Codex, launch the `review-wf` workflow, read what it wrote for anything private, and post the round. The workflow decides what to review, what is settled and when nothing is left to address. You don't review, read diffs or judge findings.
 
 `/dev-work:review <PR>` is run once per round. `<PR>` is a number or a URL. The repository is the one in the session's directory, or the URL's.
 
@@ -89,7 +89,7 @@ In a few lines:
 
 - the round, and what it found or settled;
 - whether Codex ran and, if not, why (`codex.reason`);
-- whether the review is done;
+- where the review stands, in the summary's words: another round is needed (with what is open), or nothing is left to address. Never say the review is "done" or "not done": the round has just finished, and the word doesn't say which;
 - each `needs_human` entry with its thread link;
 - the review's link, and whether it was submitted or saved as a draft for the user to read and submit;
 - `skipped`, when nothing was posted;

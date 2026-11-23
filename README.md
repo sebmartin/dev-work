@@ -87,7 +87,7 @@ Inside the workflow, everything passes as text: each agent gets the full instruc
 
 You review the pull request and merge it yourself. The pull request holds the full record of the work for reviewers and later readers; the log in the thread is the short local trail that points to it, including a line for each review round.
 
-`/dev-work:review <PR>` reviews a pull request, yours or someone else's. The first run is a full review whose findings use deep-review's finding format. Later runs check the author's fixes, reply in each finding's thread, and review what changed since the last round. They don't raise nitpicks. Whether the review is done is decided in code, not by an agent.
+`/dev-work:review <PR>` reviews a pull request, yours or someone else's. The first run is a full review whose findings use deep-review's finding format. Later runs check the author's fixes, reply in each finding's thread, and review what changed since the last round. They don't raise nitpicks. Whether anything is left to address is decided in code, not by an agent.
 
 Each round is posted as one review: findings inline, a short summary with the review's status and a footer line, and an invisible marker line at the end of each comment. On your own PRs the review is submitted as a `COMMENT`, never an approval or a request for changes, and threads whose fixes hold are resolved. On anyone else's PR the review is saved as a pending draft for you to read and submit, settled threads get a reply starting `✅ Settled`, and none is resolved. Your GitHub logins are read from `dev-work/review-logins` in the Claude Code configuration directory (`~/.claude` unless `$CLAUDE_CONFIG_DIR` is set), one per line, with blank lines and lines starting with `#` ignored. When the file is missing, the active `gh` account is used, and the command stops if that account is a bot. If the Codex CLI is installed and signed in, full passes also get a second opinion from it.
 
@@ -131,7 +131,7 @@ To review a pull request, run the review command in a session started in a direc
 /dev-work:review <PR number or URL>
 ```
 
-Run it again after the author pushes fixes or replies. Each run is one round, and it says when the review is done.
+Run it again after the author pushes fixes or replies. Each run is one round. Its summary says what the round settled and found, and whether another round is needed or nothing is left to address.
 
 You can follow a develop run with `/workflows`. It ends with a pull request, with a question for you, or with a report explaining why it failed. Run the same command again later and develop picks up where the todo stands:
 

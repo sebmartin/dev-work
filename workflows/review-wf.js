@@ -6,14 +6,17 @@ export const meta = {
 }
 
 // The review workflow. /dev-work:review reads the pull request with gh and passes it in as args:
-//   pr:           { number, url, repo: 'owner/name', title, body, author, head: sha40, base: sha40 (merge base), files: string[] }
+//   pr:           { number, url, repo: 'owner/name', title, body, author: login|null, head: sha40, base: sha40 (merge base), files: string[] }
 //   logins:       the user's GitHub logins, non-empty
+//   reviewer:     the login the review runs as (the active gh account); the reviewer marker counts only from it or the logins
 //   design:       the design text, '' when there is none
-//   reviews:      [{ id, author, body, commit: sha40|null, state, submitted_at: ISO|null }]
+//   reviews:      [{ id, author: login|null, body, commit: sha40|null, state, created_at: ISO|null, submitted_at: ISO|null }]
+//                 created_at is when the review was written; replies are compared with it, so a reply made while a
+//                 draft round was pending is still read.
 //                 commit is the full head SHA the review was submitted on (GitHub's commit_id). Anything else is read
 //                 as unknown: the change since that round is then the whole PR diff, and the run never skips as
 //                 "nothing new".
-//   threads:      [{ id, url, path, line, resolved, comments: [{ id, author, body, created_at, url }] }]
+//   threads:      [{ id, url, path, line, resolved, comments: [{ id, author: login|null, body, created_at, url }] }]
 //   since_fetched: the last round's review commit was fetched into the worktree
 //   codex:        { available: bool, reason: string }
 // Launched without these it fails at once, before any agent runs.
@@ -31,7 +34,7 @@ const GOAL = "The review exists to keep defects out and to stop the codebase get
 const MARK = n => `<!-- dev-work:review round=${n} -->`
 const REVIEW_RE = /<!-- dev-work:review round=(\d+) -->/
 const DEVELOP_RE = /<!-- dev-work:develop round=(\d+) -->/
-const DONE_RE = /Review done\./
+const DONE_RE = /Found nothing left to address\.|Nothing left that this review can settle\./
 const FULL_RE = /^\*\*Round \d+: full review\.\*\*/m
 const SEV = { blocker: '🔴', robustness: '🟠', cleanup: '🟡' }
 const BLOCKING = ['blocker', 'robustness']
@@ -330,10 +333,6 @@ const personAfterReviewer = t => {
   const i = t.comments.map(c => c.kind).lastIndexOf('reviewer')
   return t.comments.slice(i + 1).some(c => c.kind === 'user' || c.kind === 'human')
 }
-const userAfterReviewer = t => {
-  const i = t.comments.map(c => c.kind).lastIndexOf('reviewer')
-  return t.comments.slice(i + 1).some(c => c.kind === 'user')
-}
 const priorState = t => {
   const r = latestReviewerReply(t)
   if (r !== null) {
@@ -382,7 +381,7 @@ ${threads.map(threadText).join('\n\n')}
 For every thread above, return one entry (id, action, basis, evidence, reply):
 - A claimed fix, or a thread whose code was touched: check the code at the head, not the reply. When the fix holds, action resolve, basis fix. When it doesn't, action still_wrong, basis fix, and the reply says what is still wrong.
 - A decline (develop or a person says it will not be changed): when the reasoning holds, action resolve, basis decline. Otherwise push back once, action push_back, basis decline, with specific evidence. When the reviewer already pushed back in this thread, action needs_person, and the reply says what each side holds.
-- A reply from user settles the finding. "Leave it" is action resolve, basis user. "Fix it" keeps it open (action none, or still_wrong when the code still has the problem).
+- A reply from user settles the finding. "Leave it" is action resolve, basis user. "Fix it" is action still_wrong, basis user, and the reply says what is to be fixed. A reply that asks for nothing ("thanks", "agreed") is action none.
 - A reply from human is the author's side: judge it as you judge develop's. It never settles a finding by itself.
 - No reply and no change: action none.
 - A thread someone else resolved is checked like a claimed fix: reopen it (still_wrong) when the code doesn't hold up.
@@ -435,11 +434,10 @@ const applyVerdicts = vs => {
       state = 'needs_person'
     } else action = 'none'
     if (action === 'none') {
-      // Nothing asked for: a settled or parked thread stays where it was, unless the user's own reply says to fix it.
+      // Nothing asked for: a settled or parked thread stays where it was. A request to fix it comes back as still_wrong.
       const r = latestReviewerReply(t)
-      if (r !== null && r.startsWith(SETTLED) && !userAfterReviewer(t)) state = 'closed'
-      else if (r !== null && r.startsWith(NEEDS) && !userAfterReviewer(t)) state = 'needs_person'
-      else if (r !== null && r.startsWith(SETTLED) && S.mine && t.resolved && state === 'open') out.unresolve.push(t.id)
+      if (r !== null && r.startsWith(SETTLED)) state = 'closed'
+      else if (r !== null && r.startsWith(NEEDS)) state = 'needs_person'
     }
     if (action === 'none' && state === 'needs_person') needs(t, stripMarks(latestReviewerReply(t) || '').slice(NEEDS.length).trim())
     out.states.push({ severity: t.severity, state, nonblocking: t.nonblocking })
@@ -642,10 +640,16 @@ const render = (f, round) => {
 const statusLike = s => DONE_RE.test(s) || FULL_RE.test(s) || REVIEW_RE.test(s) || DEVELOP_RE.test(s)
 
 // The review's body. Its status is written here, never by an agent.
-const summary = ({ round, fullPass, since, done, open, droppedMinor, note, limit }) => {
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
+const summary = ({ round, fullPass, since, done, open, droppedMinor, note, limit, settled = 0, found = {} }) => {
   const b = open.blocking, s = open.should_fix
   const parts = [fullPass ? `**Round ${round}: full review.**` : `**Round ${round}: review of the changes since round ${since}.**`]
-  parts.push(!done ? `Open: ${b} 🔴, ${s} 🟠.` : b + s === 0 ? 'No further findings. Review done.' : `Review done. Still open, for a person to weigh: ${b} 🔴, ${s} 🟠.`)
+  // A recap of what this round did, from its counts.
+  const kinds = ['blocker', 'robustness', 'cleanup'].filter(k => found[k] > 0).map(k => `${found[k]} ${SEV[k]}`)
+  const what = kinds.length ? `Found ${kinds.length > 1 ? `${kinds.slice(0, -1).join(', ')} and ${kinds[kinds.length - 1]}` : kinds[0]}${since === null || fullPass ? '' : ' new in the changes'}.` : `Found nothing new${since === null || fullPass ? '' : ' in the changes'}.`
+  parts.push(settled > 0 ? `Settled ${plural(settled, 'finding', 'findings')} from earlier rounds. ${what}` : what)
+  // Where the review stands. Never "done": the round has just finished, so say what is left.
+  parts.push(!done ? `Another round is needed: ${b} 🔴, ${s} 🟠 open.` : b + s === 0 ? 'Found nothing left to address.' : `Nothing left that this review can settle. Still open, for a person to weigh: ${b} 🔴, ${s} 🟠.`)
   if (limit) parts.push(limit)
   if (fullPass && droppedMinor > 0) parts.push(`${droppedMinor} minor point${droppedMinor === 1 ? ' was' : 's were'} left out.`)
   const extra = norm(note).trim()
@@ -717,7 +721,7 @@ const main = async () => {
     return { round: S.last.round, open: openCounts(now.states), needs_human: now.needsHuman }
   }
   if (S.last && S.last.done && !(S.userReplyAt > S.last.created)) {
-    return result('done', { ...standing(), done: true, skipped: 'The review is already done; nothing was posted.' })
+    return result('done', { ...standing(), done: true, skipped: 'The last round found nothing left to address; nothing was posted.' })
   }
   // Nothing new: the same head as the last round and no reply in the reviewer's threads since it. A reply whose time
   // can't be read counts as new, so a reply is never skipped.
@@ -775,7 +779,9 @@ const main = async () => {
   const review = {
     event: S.mine ? 'COMMENT' : 'PENDING',
     commit: pr.head,
-    body: summary({ round: S.round, fullPass, since: S.last ? S.last.round : null, done, open, droppedMinor, note: c.note, limit }),
+    body: summary({ round: S.round, fullPass, since: S.last ? S.last.round : null, done, open, droppedMinor, note: c.note, limit,
+      settled: applied.replies.filter(r => r.body.startsWith(SETTLED)).length,
+      found: posted.reduce((n, f) => ({ ...n, [f.severity]: (n[f.severity] || 0) + 1 }), {}) }),
     comments: posted.map(f => ({ path: f.path, line: f.line, body: render(f, S.round) })),
     replies: [...applied.replies, ...replies],
     resolve: applied.resolve,
