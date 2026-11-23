@@ -28,6 +28,7 @@ When the file is missing or empty, use the active account: `gh api user --jq '.l
 - `gh pr view <n> --json number,url,title,body,author,headRefName,headRefOid,baseRefOid,isCrossRepository`.
 - The changed files with a paginated call, because `gh pr view --json files` stops at 100: `gh api repos/<owner>/<repo>/pulls/<n>/files --paginate --jq '.[].filename'`. These paths are `files` in `args.pr`.
 - Reviews and review threads with `gh api graphql --paginate`. Reviews: `id`, `author{login}`, `body`, `commit{oid}`, `state`, `submittedAt`, `createdAt`. Review threads: `id`, `isResolved`, `path`, `line`, `comments{ id, author{login}, body, createdAt, url }`.
+- The PR's conversation comments, outside any thread: `gh api repos/<owner>/<repo>/issues/<n>/comments --paginate`, mapped to `{ author: user.login, body, created_at }`.
 - Map them to the `args` field names: reviews `{ id, author, body, commit, state, submitted_at, created_at }` (`created_at` is the review's `createdAt`, when it was written, which on a draft is earlier than `submitted_at`), where `commit` is the head SHA the review was submitted on (null when there isn't one), and threads `{ id, url, path, line, resolved, comments: [{ id, author, body, created_at, url }] }`, with `url` the first comment's url. Every author, of the PR, reviews and comments, is the account's login string (`author.login`), never the object `gh` returns; one that is null (a deleted account) stays null.
 
 ## 2. Find the design
@@ -63,6 +64,7 @@ Note the session's start time, then launch `dev-work:review-wf` with exactly the
 - `reviewer`: the active account's login (`gh api user --jq .login`); the workflow accepts its marker only from this account and the user's logins
 - `design`
 - `reviews`
+- `conversation`
 - `threads`
 - `since_fetched`
 - `codex`

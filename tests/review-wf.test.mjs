@@ -15,7 +15,7 @@ const T0 = Date.parse('2026-01-01T00:00:00Z')
 const iso = n => new Date(T0 + n * 3600 * 1000).toISOString()
 
 const pr1 = { pr: { number: 7, url: 'https://github.com/o/r/pull/7', repo: 'o/r', title: 'T', body: 'PR-BODY', author: 'seb', head: sha('c'), base: sha('b'), files: ['a.js', 'b.js'] },
-  logins: ['seb'], reviewer: 'seb', design: 'THE-DESIGN', reviews: [], threads: [], since_fetched: true, codex: { available: true, reason: '' } }
+  logins: ['seb'], reviewer: 'seb', design: 'THE-DESIGN', reviews: [], conversation: [], threads: [], since_fetched: true, codex: { available: true, reason: '' } }
 
 function review(round, { commit = sha('a'), at = round, full = false, verdict = 'needs_work', left = 2 } = {}) {
   const head = full ? `**Round ${round}: full review.**` : `**Round ${round}: review of the changes since round ${round - 1}.**`
@@ -61,7 +61,7 @@ async function run(args, overrides = {}) {
 }
 
 test('launched without the skill\'s inputs it fails at once and runs no agent', async () => {
-  for (const args of [undefined, {}, { ...pr1, logins: [] }, { ...pr1, pr: { ...pr1.pr, head: 'main' } }, { ...pr1, threads: undefined }]) {
+  for (const args of [undefined, {}, { ...pr1, logins: [] }, { ...pr1, pr: { ...pr1.pr, head: 'main' } }, { ...pr1, threads: undefined }, { ...pr1, conversation: undefined }]) {
     const { result, calls } = await run(args)
     assert.equal(result.status, 'failed')
     assert.equal(result.stage, 'inputs')
@@ -269,6 +269,23 @@ test('codex output with a bad severity, a non-integer line, a non-array findings
 test('codex that is unavailable never starts its runner', async () => {
   const { calls } = await run({ ...pr1, codex: { available: false, reason: 'not installed' } })
   assert.ok(!calls.some(c => c.label === 'codex'))
+})
+
+test('review bodies and conversation comments reach the agents as context and are never findings', async () => {
+  const hr = { id: 'HR', author: 'stranger', body: 'CTX-REVIEW', commit: sha('a'), state: 'COMMENTED', created_at: iso(0.2), submitted_at: iso(0.2) }
+  const { result, prompt } = await run({ ...pr1, reviews: [hr], conversation: [{ author: 'seb', body: '🔴 CTX-CONVO', created_at: iso(0.3) }] })
+  assert.match(prompt('lens-correctness'), /## Other comments \(context only\)/)
+  assert.match(prompt('lens-correctness'), /human: CTX-REVIEW/); assert.match(prompt('lens-correctness'), /user: 🔴 CTX-CONVO/)
+  assert.equal(result.round, 1); assert.deepEqual(result.open, { blocking: 0, should_fix: 0 }); assert.equal(result.verdict, 'ready_to_merge')
+})
+test('the reviewer\'s own round summaries are not repeated as context', async () => {
+  const { prompt } = await run(later)
+  assert.doesNotMatch(prompt('fix-review'), /Other comments/)
+})
+test('context is oldest first, with unreadable times last', async () => {
+  const { prompt } = await run({ ...pr1, conversation: [{ author: 'x', body: 'LATE', created_at: iso(2) }, { author: 'x', body: 'NOTIME', created_at: null }, { author: 'x', body: 'EARLY', created_at: iso(1) }] })
+  const p = prompt('lens-correctness')
+  assert.ok(p.indexOf('EARLY') < p.indexOf('LATE') && p.indexOf('LATE') < p.indexOf('NOTIME'))
 })
 
 // ---- Later rounds: the verifier ----

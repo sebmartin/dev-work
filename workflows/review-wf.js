@@ -16,6 +16,7 @@ export const meta = {
 //                 commit is the full head SHA the review was submitted on (GitHub's commit_id). Anything else is read
 //                 as unknown: the change since that round is then the whole PR diff, and the run never skips as
 //                 "nothing new".
+//   conversation: [{ author: login|null, body, created_at: ISO|null }] the comments on the PR's conversation, outside any thread
 //   threads:      [{ id, url, path, line, resolved, comments: [{ id, author: login|null, body, created_at, url }] }]
 //   since_fetched: the last round's review commit was fetched into the worktree
 //   codex:        { available: bool, reason: string }
@@ -101,7 +102,7 @@ const inputsOk = a => {
       && (isStr(p.author) || p.author === null) && isStr(a.reviewer) && a.reviewer !== ''
       && isStr(p.repo) && isStr(p.url) && isStr(p.title) && isStr(p.body) && Array.isArray(p.files)
       && Array.isArray(a.logins) && a.logins.length > 0 && a.logins.every(l => isStr(l) && l !== '')
-      && isStr(a.design) && Array.isArray(a.reviews) && Array.isArray(a.threads)
+      && isStr(a.design) && Array.isArray(a.reviews) && Array.isArray(a.conversation) && Array.isArray(a.threads)
       && typeof a.since_fetched === 'boolean' && typeof a.codex === 'object' && a.codex !== null && typeof a.codex.available === 'boolean'
   } catch { return false }
 }
@@ -157,6 +158,11 @@ Read-only: change nothing in this checkout; don't run builds or tests.`,
 Each thread is \`[thread <id>] <path>:<line> (resolved|open)\`, then its comments in order, each with who wrote it: reviewer (this review's earlier rounds), develop (the author's agent), user (the person this review works for), human (anyone else).
 
 ${threads.map(threadText).join('\n\n') || 'None yet.'}`)
+  if (S.context.length) parts.push(`## Other comments (context only)
+
+Review bodies and comments on the pull request's conversation, outside any thread. They are context: never findings, and never answered here.
+
+${S.context.map(c => `${c.kind}: ${c.body.replace(/\n/g, '\n  ')}`).join('\n\n')}`)
   if (hasDesign()) parts.push(`## The Design\n\n${args.design.trim()}`)
   return parts.join('\n\n')
 }
@@ -735,7 +741,19 @@ const main = async () => {
     } else humanThreads.push(th)
   }
 
-  S = { mine: logins.includes(pr.author), rounds, last, round: last ? last.round + 1 : 1, fullPasses: rounds.filter(r => r.full).length, fullPass: false, reviewerThreads, userThreads, humanThreads }
+  // Comments outside any thread, oldest first (unreadable times last, in order): review bodies except drafts, and the
+  // conversation. The reviewer's own are left out.
+  const at = x => { const t = Date.parse(x); return Number.isNaN(t) ? Infinity : t }
+  const context = [
+    ...reviews.filter(r => r && r.state !== 'PENDING').map(r => ({ author: r.author, body: r.body, at: at(r.created_at || r.submitted_at) })),
+    ...list(args.conversation).map(c => ({ author: c.author, body: c.body, at: at(c.created_at) })),
+  ].map(c => ({ kind: who(c), body: stripMarks(c.body), at: c.at }))
+    .filter(c => c.body !== '' && c.kind !== 'reviewer')
+    .map((c, i) => ({ ...c, i }))
+    .sort((x, y) => (x.at === y.at ? x.i - y.i : x.at < y.at ? -1 : 1))
+    .map(({ kind, body }) => ({ kind, body }))
+
+  S = { context, mine: logins.includes(pr.author), rounds, last, round: last ? last.round + 1 : 1, fullPasses: rounds.filter(r => r.full).length, fullPass: false, reviewerThreads, userThreads, humanThreads }
 
   // A run that posts nothing reports where the existing threads stand, as the last round left them.
   const standing = () => {
