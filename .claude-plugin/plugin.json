@@ -1,6 +1,6 @@
 {
   "name": "dev-work",
-  "version": "0.3.2",
+  "version": "0.3.0",
   "description": "Takes a thread todo with a linked design to a PR ready for human review: a session sets up and publishes, and a dynamic workflow plans, builds and reviews the change the way Superpowers' subagent-driven-development does.",
   "author": {
     "name": "Seb Martin"
