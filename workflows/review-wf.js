@@ -24,6 +24,8 @@ export const meta = {
 // It returns the round ready to post as `review`:
 //   { event: 'COMMENT'|'PENDING', commit: pr.head, body, comments: [{ path, line (0 = file-level), body }],
 //     replies: [{ thread, body }], resolve: [thread id], unresolve: [thread id] }
+// Threads the user starts are findings: severity from the emoji they open with (🔴 without one), answered by the
+// verifier and counted towards the verdict. Threads anyone else starts are context only.
 // plus the structured result: status ('reviewed', 'no_change' or 'failed'), verdict (only when reviewed: 'needs_work',
 // 'ready_to_merge' or 'needs_human'), round, full_pass, auto_rounds_left, open, needs_human, codex, output_tokens.
 //
@@ -132,7 +134,7 @@ const threadText = t => [
 // What every reviewer is given: the PR, how to see its change, its threads, and the design when there is one.
 const prInfo = ({ withThreads = true } = {}) => {
   const { pr } = args
-  const threads = [...S.reviewerThreads, ...S.humanThreads]
+  const threads = [...S.reviewerThreads, ...S.userThreads, ...S.humanThreads]
   const parts = [
     `## The pull request
 
@@ -313,7 +315,7 @@ Each finding is posted as an inline comment in the format: a first line with the
 
 note: a sentence for the review's summary, only for something the threads don't already say; usually ''. Never list or repeat findings in it, and never write a status: code writes the status.
 
-human_replies: a reply in a thread a person started (its first comment is from user or human), only when you have something to add there, such as evidence that answers their question. A finding a person already raised goes in \`covered\`, never in a reply.${laterRound() ? `\n\n${NO_NEW}` : ''}`
+human_replies: a reply in a thread someone other than the user started (its first comment is from human or develop), only when you have something to add there, such as evidence that answers their question. A finding a person already raised goes in \`covered\`, never in a reply.${laterRound() ? `\n\n${NO_NEW}` : ''}`
 }
 
 // ---- Later rounds: what the verifier is asked, and what code does with its answers ----
@@ -348,10 +350,12 @@ const priorState = t => {
   // with evidence, so a missing or weak answer leaves it open.
   return 'open'
 }
-// Reviewer threads to check this round: any with a comment after the reviewer's latest one (so a reply after a
+// The threads the verifier answers and the verdict counts: the reviewer's own and the ones the user started.
+const findingThreads = () => [...S.reviewerThreads, ...S.userThreads]
+// Finding threads to check this round: any with a comment after the reviewer's latest one (so a reply after a
 // settled or parked thread is read), then unresolved ones not settled or parked, and resolved ones (by anyone) with no
 // settled reply from the reviewer.
-const toVerify = () => S.reviewerThreads.filter(t => {
+const toVerify = () => findingThreads().filter(t => {
   const r = latestReviewerReply(t)
   const parked = r !== null && (r.startsWith(SETTLED) || r.startsWith(NEEDS))
   if (repliedAfterReviewer(t) && (!parked || personAfterReviewer(t))) return true
@@ -362,7 +366,7 @@ const toVerify = () => S.reviewerThreads.filter(t => {
 
 const verifierPrompt = (threads, since) => `${GOAL}
 
-You are the verifier for a later round of this review. Earlier rounds posted findings, each in its own thread. The author's side has answered some: develop (the author's agent) says it fixed a finding or declined it, a person may have replied, and someone may have resolved a thread. For each thread below, decide whether the finding is settled and say so in the thread.
+You are the verifier for a later round of this review. The threads below are the review's findings and the user's. Earlier rounds posted findings, each in its own thread, and the user may have started threads of their own. The author's side has answered some: develop (the author's agent) says it fixed a finding or declined it, a person may have replied, and someone may have resolved a thread. For each thread below, decide whether the finding is settled and say so in the thread.
 
 ${prInfo({ withThreads: false })}
 
@@ -382,6 +386,7 @@ For every thread above, return one entry (id, action, basis, evidence, reply):
 - A claimed fix, or a thread whose code was touched: check the code at the head, not the reply. When the fix holds, action resolve, basis fix. When it doesn't, action still_wrong, basis fix, and the reply says what is still wrong.
 - A decline (develop or a person says it will not be changed): when the reasoning holds, action resolve, basis decline. Otherwise push back once, action push_back, basis decline, with specific evidence. When the reviewer already pushed back in this thread, action needs_person, and the reply says what each side holds.
 - A reply from user settles the finding. "Leave it" is action resolve, basis user. "Fix it" is action still_wrong, basis user, and the reply says what is to be fixed. A reply that asks for nothing ("thanks", "agreed") is action none.
+- A thread whose first comment is from user is a finding the user raised: answer it as you answer the reviewer's own. A question in it is settled when it has been answered and the answer is sufficient: action resolve, basis fix, with the file:line that bears out the answer. The user saying in it that it needs no change is action resolve, basis user.
 - A reply from human is the author's side: judge it as you judge develop's. It never settles a finding by itself.
 - No reply and no change: action none.
 - A thread someone else resolved is checked like a claimed fix: reopen it (still_wrong) when the code doesn't hold up.
@@ -391,9 +396,9 @@ For every thread above, return one entry (id, action, basis, evidence, reply):
 
 // What the verifier's answers turn into, all of it decided here. Ids not in toVerify() are ignored and a missing thread
 // is none. A resolve needs a file:line or the user's own reply; without one it is none.
-const applyVerdicts = vs => {
+const applyAnswers = answers => {
   const pending = new Map(toVerify().map(t => [t.id, t]))
-  const given = new Map(list(vs).filter(x => isStr(x.id) && pending.has(x.id)).map(x => [x.id, x]))
+  const given = new Map(list(answers).filter(x => isStr(x.id) && pending.has(x.id)).map(x => [x.id, x]))
   const out = { replies: [], resolve: [], unresolve: [], states: [], needsHuman: [] }
   const mark = `\n\n${MARK(S.round)}`
   const says = (t, action) => {
@@ -403,14 +408,14 @@ const applyVerdicts = vs => {
     return { v, reply }
   }
   const needs = (t, why) => out.needsHuman.push({ thread: t.id, url: t.url, why })
-  for (const t of S.reviewerThreads) {
+  for (const t of findingThreads()) {
     const v = given.get(t.id)
     let action = v && isStr(v.action) ? v.action : 'none'
     // Only an entry that says none is an answer. A thread the verifier left out, or answered with something unusable
     // (a resolve with no file:line, a still_wrong with no reply), has no answer.
     const answeredNone = !!v && v.action === 'none'
     if (action === 'resolve') {
-      const byUser = v.basis === 'user' && t.comments.some(c => c.kind === 'user')
+      const byUser = v.basis === 'user' && t.comments.slice(1).some(c => c.kind === 'user')
       if (!byUser && !(isStr(v.evidence) && EVIDENCE_RE.test(v.evidence))) action = 'none'
     }
     if (action === 'push_back') {
@@ -608,7 +613,7 @@ const anchor = f => {
 // was refuted with file:line evidence or is covered by a thread that exists. Unknown ids are ignored.
 const toPost = (c, { fullPass }) => {
   const byId = new Map(raw.map(r => [r.id, r]))
-  const threadIds = new Set([...S.reviewerThreads, ...S.humanThreads].map(t => t.id))
+  const threadIds = new Set([...S.reviewerThreads, ...S.userThreads, ...S.humanThreads].map(t => t.id))
   const ids = e => (Array.isArray(e.sources) ? e.sources : []).filter(id => byId.has(id))
   const named = new Set()
   const posted = []
@@ -715,6 +720,7 @@ const main = async () => {
   const last = rounds.length ? rounds[rounds.length - 1] : null
 
   const reviewerThreads = []
+  const userThreads = []
   const humanThreads = []
   for (const t of threads) {
     if (!t || !Array.isArray(t.comments) || t.comments.length === 0) continue
@@ -723,14 +729,17 @@ const main = async () => {
     if (comments[0].kind === 'reviewer') {
       th.severity = sevOf(comments[0].body)
       reviewerThreads.push(th)
+    } else if (comments[0].kind === 'user') {
+      th.severity = sevOf(comments[0].body) || 'blocker'
+      userThreads.push(th)
     } else humanThreads.push(th)
   }
 
-  S = { mine: logins.includes(pr.author), rounds, last, round: last ? last.round + 1 : 1, fullPasses: rounds.filter(r => r.full).length, fullPass: false, reviewerThreads, humanThreads }
+  S = { mine: logins.includes(pr.author), rounds, last, round: last ? last.round + 1 : 1, fullPasses: rounds.filter(r => r.full).length, fullPass: false, reviewerThreads, userThreads, humanThreads }
 
   // A run that posts nothing reports where the existing threads stand, as the last round left them.
   const standing = () => {
-    const now = applyVerdicts([])
+    const now = applyAnswers([])
     return { round: S.last.round, open: openCounts(now.states), needs_human: now.needsHuman, auto_rounds_left: autoLeft(roundsPosted()) }
   }
   // Nothing new: the same head as the last round and no reply in the reviewer's threads since it. A reply whose time
@@ -753,11 +762,11 @@ const main = async () => {
     : null
 
   // Later rounds: answer each earlier finding's thread before looking for anything new.
-  const stale = toVerify()
-  const verdicts = stale.length
+  const stale = S.round > 1 ? toVerify() : []
+  const answered = stale.length
     ? must(await ag(verifierPrompt(stale, since()), { label: 'verifier', phase: 'Verify', ...tier('opus'), schema: VERIFY }), 'verifier')
     : { threads: [] }
-  const applied = applyVerdicts(verdicts.threads)
+  const applied = applyAnswers(answered.threads)
 
   const surfaces = list(scout.surfaces).filter(s => isStr(s.file))
   const tags = new Set(surfaces.flatMap(s => (Array.isArray(s.tags) ? s.tags : [])))
