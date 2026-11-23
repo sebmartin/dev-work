@@ -294,6 +294,12 @@ const later = { ...pr1, reviews: [review(1, { full: true, at: 1, commit: sha('a'
 const userSaysLeaveIt = { ...later, threads: [thread('T1', '🟠 **H** · `a.js:3` <!-- dev-work:review round=1 -->', [{ author: 'seb', body: 'leave it', at: 2 }])] }
 const v = (id, action, basis, evidence, reply) => ({ id, action, basis, evidence, reply })
 
+test('a develop reply whose marker carries status=pending_review is develop\'s', async () => {
+  const t = thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: 'Fixed in abc <!-- dev-work:develop round=1 status=pending_review -->', at: 2 }])
+  const { prompt } = await run({ ...later, threads: [t] })
+  assert.match(prompt('verifier'), /develop: Fixed in abc/); assert.doesNotMatch(prompt('verifier'), /user: Fixed in abc|status=pending_review/)
+})
+
 test('a fix that holds resolves the thread on the user\'s PR with a settled reply citing file:line', async () => {
   const { result, prompt } = await run(later, { verifier: () => ({ threads: [v('T1', 'resolve', 'fix', 'a.js:5', 'Now checked.')] }) })
   assert.deepEqual(result.review.resolve, ['T1'])

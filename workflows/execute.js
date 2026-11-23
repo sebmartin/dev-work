@@ -62,7 +62,7 @@ const closed = rr => new Set(rr.results.filter(r => r.addressed && (r.evidence |
 const QUESTION = obj({ question: str, reason: { type: 'string', enum: ['expensive to reverse', 'scope creep'] }, why: str, if_guessed: str, options: arr(str), recommendation: str })
 const RULINGS = { rulings: arr(str), question: QUESTION }
 // The invisible line /dev-work:review reads to tell develop's replies from a person's.
-const DEV_MARK = r => `<!-- dev-work:develop round=${r} -->`
+const DEV_MARK = r => `<!-- dev-work:develop round=${r} status=pending_review -->`
 const asks = r => !!(r && r.question && typeof r.question.question === 'string' && r.question.question.trim())
 const ASKING = `Return a question for the user only when a wrong guess would be expensive to reverse (a large part would have to be rebuilt, or something would ship that loses data or breaks users' trust), or when doing it would be significant scope creep beyond what the design asked for, so the user decides whether it is now or later. Anything cheap to reverse is a ruling, not a question. A question gives the question in plain terms, reason (expensive to reverse or scope creep) and why, if_guessed (what goes wrong if you guess), the options, and your recommendation. Leave question out when you have none.`
 
@@ -598,7 +598,7 @@ For each item, write one reply of one or two lines, standing on its own, that st
 No thanks, no apologies, and don't restate the comment; disagree with evidence, not tone. If the round changed anything the description says, return the whole updated description in pr_body, without the footer at its end (one is added for you); otherwise return pr_body empty.`,
     { label: `round-${R}-write-up`, phase: 'Write-up', model: 'sonnet', effort: 'medium', schema: obj({ replies: arr(obj({ id: str, reply: str })), pr_body: str }) })
   if (!w) return result('failed', { stage: 'round write-up' })
-  return result('done', { final_head: loop.head, round: R, outcome, surfaced, replies: w.replies.map(x => ({ ...x, reply: `${x.reply.trimEnd()}\n\n${DEV_MARK(R)}` })), pr_body: w.pr_body ? withFooter(w.pr_body) : '' })
+  return result('done', { pr_status: 'pending_review', final_head: loop.head, round: R, outcome, surfaced, replies: w.replies.map(x => ({ ...x, reply: `${x.reply.trimEnd()}\n\n${DEV_MARK(R)}` })), pr_body: w.pr_body ? withFooter(w.pr_body) : '' })
 }
 
 // ---------- Plan ----------

@@ -215,7 +215,8 @@ const round = { ...start, feedback: [{ id: 'PR1-1', text: 'rename x' }], round: 
 test('a review round fixes, re-reviews and writes replies without replanning', async () => {
   const { result, calls, prompt } = await run(round)
   assert.equal(result.status, 'done')
-  assert.deepEqual(result.replies, [{ id: 'PR1-1', reply: 'done\n\n<!-- dev-work:develop round=1 -->' }])
+  assert.deepEqual(result.replies, [{ id: 'PR1-1', reply: 'done\n\n<!-- dev-work:develop round=1 status=pending_review -->' }])
+  assert.equal(result.pr_status, 'pending_review')
   assert.ok(!calls.some(c => c.label === 'plan'))
   assert.match(prompt('round-1-fix-r1'), /THE-PR-TEXT/)
   assert.match(prompt('round-1-re-review-r1'), new RegExp(sha('f')))
@@ -224,7 +225,7 @@ test('a review round fixes, re-reviews and writes replies without replanning', a
 test('review-round replies end with the develop marker for their round', async () => {
   const { result } = await run({ ...round, round: 3 }, { 'round-3-write-up': p => ({ replies: [...p.matchAll(/^- (PR[\w-]+): /gm)].map(m => ({ id: m[1], reply: 'Fixed in abc.' })), pr_body: '' }) })
   assert.ok(result.replies.length > 0)
-  for (const r of result.replies) assert.match(r.reply, /^Fixed in abc\.\n\n<!-- dev-work:develop round=3 -->$/)
+  for (const r of result.replies) assert.match(r.reply, /^Fixed in abc\.\n\n<!-- dev-work:develop round=3 status=pending_review -->$/)
 })
 
 test('the re-review asks for a consequence on new findings', async () => {
