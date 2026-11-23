@@ -422,7 +422,8 @@ const applyAnswers = answers => {
     // (a resolve with no file:line, a still_wrong with no reply), has no answer.
     const answeredNone = !!v && v.action === 'none'
     if (action === 'resolve') {
-      const byUser = v.basis === 'user' && t.comments.slice(1).some(c => c.kind === 'user')
+      // The user's comment has to come after the reviewer's latest one; an older 'fix it' is not a settlement.
+      const byUser = v.basis === 'user' && t.comments.slice(Math.max(t.comments.map(c => c.kind).lastIndexOf('reviewer'), 0) + 1).some(c => c.kind === 'user')
       if (!byUser && !(isStr(v.evidence) && EVIDENCE_RE.test(v.evidence))) action = 'none'
     }
     if (action === 'push_back') {

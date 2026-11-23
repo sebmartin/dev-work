@@ -663,6 +663,11 @@ test('the user\'s opening comment is not a reply: a basis-user resolve needs a l
   const said = await run({ ...later, threads: [thread('U1', 'why?', [{ author: 'seb', body: 'no change needed', at: 2 }])] }, { verifier: () => ({ threads: [v('U1', 'resolve', 'user', '', 'Left as it is.')] }) })
   assert.deepEqual(said.result.review.resolve, ['U1'])
 })
+test('a basis-user resolve is refused when the user\'s only comment came before the reviewer\'s latest reply', async () => {
+  const t = thread('T1', '🟠 **H** · `a.js:3` <!-- dev-work:review round=1 -->', [{ author: 'seb', body: 'fix it', at: 2 }, { author: 'seb', body: '**Still open:** x <!-- dev-work:review round=2 -->', at: 3 }, { author: 'seb', body: 'Fixed <!-- dev-work:develop round=2 -->', at: 4 }])
+  const { result } = await run({ ...later, threads: [t] }, { verifier: () => ({ threads: [v('T1', 'resolve', 'user', '', 'Left as it is.')] }) })
+  assert.deepEqual(result.review.resolve, []); assert.deepEqual(result.review.replies, []); assert.deepEqual(result.open, { blocking: 0, should_fix: 1 }); assert.equal(result.verdict, 'needs_work')
+})
 test('on someone else\'s PR a settled user thread gets a settled reply, is not resolved, and counts as closed', async () => {
   const { result } = await run({ ...stranger, threads: [thread('U1', 'why?', [])] }, { verifier: () => ({ threads: [v('U1', 'resolve', 'fix', 'a.js:9', 'Answered.')] }) })
   assert.deepEqual(result.review.resolve, []); assert.match(result.review.replies[0].body, /^\*\*✅ Settled:\*\*/); assert.equal(result.open.blocking, 0)
