@@ -570,7 +570,7 @@ test('needs_work lists the threads waiting on a person beside the open findings'
   const parked = thread('T2', '🔴 **B** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: '**Needs a person:** x <!-- dev-work:review round=2 -->', at: 3 }])
   const { result } = await run({ ...later, threads: [...later.threads, parked], reviews: r2 })
   assert.equal(result.verdict, 'needs_work'); assert.deepEqual(result.needs_human.map(n => n.thread), ['T2'])
-  assert.match(result.review.body, /Another round is needed: 1 🔴, 1 🟠 waiting on fixes\. Also waiting on a person: https:\/\/github\.com\/o\/r\/pull\/7#T2\./)
+  assert.match(result.review.body, /Another round is needed: 0 🔴, 1 🟠 waiting on fixes\. Also waiting on a person: https:\/\/github\.com\/o\/r\/pull\/7#T2\./)
 })
 test('ready_to_merge recommends merging and mentions a 🟡 still open', async () => {
   const minor = thread('T3', '🟡 **m** <!-- dev-work:review round=1 -->', [])
@@ -638,6 +638,15 @@ test('a thread the user started and resolved themselves is closed: not counted, 
   assert.equal(r2.result.open.blocking, 0)
   assert.ok(!/\[thread U1\]/.test(r2.calls.find(c => c.label === 'verifier')?.prompt || ''), 'not sent to the verifier')
   assert.ok(!r2.review || !r2.review.unresolve.includes('U1'))
+})
+
+test('a user thread the reviewer settled and resolved is not closed by the user: a later fix it is read', async () => {
+  const t = thread('U1', 'x is mutable', [
+    { author: 'seb', body: '**✅ Settled:** fixed at a.js:5 <!-- dev-work:review round=2 -->', at: 3 },
+    { author: 'seb', body: 'No, still mutable on the reset path, fix it', at: 4 }], { resolved: true, by: 'seb' })
+  const { result, calls } = await run({ ...later, threads: [...later.threads, t], reviews: r2 }, { verifier: () => ({ threads: [] }) })
+  assert.match(calls.find(c => c.label === 'verifier').prompt, /\[thread U1\]/)
+  assert.equal(result.open.blocking, 1); assert.equal(result.verdict, 'needs_work')
 })
 
 test('a thread the user started and someone else resolved is still counted open', async () => {

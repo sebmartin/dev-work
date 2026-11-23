@@ -659,8 +659,9 @@ const statusLike = s => /Another round is needed|Found nothing left to address|a
 // The review's body. Its status is written here, never by an agent.
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
 const summaryMark = ({ round, fullPass, verdict, left }) => `<!-- dev-work:review round=${round} full=${fullPass} status=reviewed verdict=${verdict} auto_rounds_left=${left} -->`
-const summary = ({ round, fullPass, since, verdict, open, minorOpen, waiting, droppedMinor, note, limit, reason, rounds, left, settled = 0, found = {} }) => {
-  const b = open.blocking, s = open.should_fix
+const summary = ({ round, fullPass, since, verdict, fixable, minorOpen, waiting, droppedMinor, note, limit, reason, rounds, left, settled = 0, found = {} }) => {
+  // The needs_work line counts only threads waiting on a fix; parked ones are listed as waiting on a person.
+  const b = fixable.blocking, s = fixable.should_fix
   const parts = [fullPass ? `**Round ${round}: full review.**` : `**Round ${round}: review of the changes since round ${since}.**`]
   // A recap of what this round did, from its counts.
   const kinds = ['blocker', 'robustness', 'cleanup'].filter(k => found[k] > 0).map(k => `${found[k]} ${SEV[k]}`)
@@ -739,7 +740,10 @@ const main = async () => {
       reviewerThreads.push(th)
     } else if (comments[0].kind === 'user') {
       th.severity = sevOf(comments[0].body) || 'blocker'
+      // Closed by the user only when the reviewer didn't settle it: the reviewer resolves a settled thread as the
+      // same account, and a later reply there must still be read.
       th.userClosed = t.resolved === true && isStr(t.resolved_by) && logins.includes(t.resolved_by)
+        && !(latestReviewerReply(th) || '').startsWith(SETTLED)
       userThreads.push(th)
     } else humanThreads.push(th)
   }
@@ -813,6 +817,7 @@ const main = async () => {
   const capped = !!limit
   const verdict = verdictOf(states, { capped })
   const open = openCounts(states)
+  const fixable = openCounts(states.filter(x => x.state === 'open'))
   const count = roundsSince(), left = autoLeft(count)
   const minorOpen = states.filter(x => x.severity === 'cleanup' && (x.state === 'open' || x.state === 'needs_person')).length
   const humanIds = new Set(S.humanThreads.map(t => t.id))
@@ -822,7 +827,7 @@ const main = async () => {
   const review = {
     event: S.mine ? 'COMMENT' : 'PENDING',
     commit: pr.head,
-    body: summary({ round: S.round, fullPass, since: S.last ? S.last.round : null, verdict, open, minorOpen, waiting: applied.needsHuman, droppedMinor, note: c.note, limit, reason, rounds: count, left,
+    body: summary({ round: S.round, fullPass, since: S.last ? S.last.round : null, verdict, fixable, minorOpen, waiting: applied.needsHuman, droppedMinor, note: c.note, limit, reason, rounds: count, left,
       settled: applied.replies.filter(r => r.body.startsWith(SETTLED)).length,
       found: posted.reduce((n, f) => ({ ...n, [f.severity]: (n[f.severity] || 0) + 1 }), {}) }),
     comments: posted.map(f => ({ path: f.path, line: f.line, body: render(f, S.round) })),

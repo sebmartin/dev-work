@@ -25,8 +25,6 @@ When the file is missing or empty, use the active account: `gh api user --jq '.l
 
 ## 1. Read the PR
 
-First note the time (`date -u +%Y-%m-%dT%H:%M:%SZ`) as `read_at`, just before reading the threads.
-
 - `gh pr view <n> --json number,url,title,body,author,headRefName,headRefOid,baseRefOid,isCrossRepository`.
 - The changed files with a paginated call, because `gh pr view --json files` stops at 100: `gh api repos/<owner>/<repo>/pulls/<n>/files --paginate --jq '.[].filename'`. These paths are `files` in `args.pr`.
 - Reviews and review threads with `gh api graphql --paginate`. Reviews: `id`, `author{login}`, `body`, `commit{oid}`, `state`, `submittedAt`, `createdAt`. Review threads: `id`, `isResolved`, `resolvedBy{login}`, `path`, `line`, `comments{ id, author{login}, body, createdAt, url }`.
@@ -59,7 +57,7 @@ Run `command -v codex` and `codex login status`. `codex` is `{ available, reason
 
 ## 6. Launch
 
-Launch `dev-work:review-wf` with exactly these `args` fields:
+Note the session's start time, then launch `dev-work:review-wf` with exactly these `args` fields:
 
 - `pr`: `{ number, url, repo: 'owner/name', title, body, author: author.login, head: headRefOid, base: <the merge base>, files: [every changed path, from the paginated call in step 1] }`
 - `logins`
@@ -84,8 +82,6 @@ When `review` is not null, post it through GraphQL:
 3. Each reply goes in with `addPullRequestReviewThreadReply` on its thread, with `pullRequestReviewId` set to the id from step 1. Never leave `pullRequestReviewId` out of either call: without it the comment is posted on its own, outside the pending review.
 4. On `event: COMMENT`: `submitPullRequestReview(event: COMMENT, body)`, then `resolveReviewThread` for each of `resolve` and `unresolveReviewThread` for each of `unresolve`.
 5. On `event: PENDING`: `updatePullRequestReview(body)` and leave it pending for the user to read and submit.
-
-Before step 4 (or before leaving the draft pending), read the threads again. If any comment from anyone but the reviewer (a comment without the `dev-work:review` marker) has a `createdAt` later than `read_at`, delete the pending review and run the round again from section 1, once. If that happens a second time, post nothing and report that comments kept arriving. This is because a comment made during the run would otherwise sit before the round's own replies and be read by no later round.
 
 If any call fails before the submit, delete the pending review (`deletePullRequestReview`) so no half-round is left, and report the failure.
 
