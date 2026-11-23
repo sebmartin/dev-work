@@ -636,3 +636,15 @@ test('the verifier is told how to settle the user\'s own threads', async () => {
   const { prompt } = await run({ ...later, threads: [thread('U1', 'why?', [])] })
   assert.match(prompt('verifier'), /first comment is from user is a finding the user raised/)
 })
+
+test('on an unchanged head a thread the user started after the last round, or a reply in one, is new and runs a round', async () => {
+  const same = { ...later, pr: { ...later.pr, head: sha('a') } }
+  const fresh = thread('U1', 'why?', []); fresh.comments[0].created_at = iso(3)
+  const a = await run({ ...same, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', []), fresh] })
+  assert.ok(a.calls.some(c => c.label === 'verifier')); assert.notEqual(a.result.status, 'no_change')
+  const old = thread('U1', 'why?', [{ author: 'seb', body: 'still unclear', at: 3 }])
+  const b = await run({ ...same, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', []), old] })
+  assert.ok(b.calls.some(c => c.label === 'verifier')); assert.notEqual(b.result.status, 'no_change')
+  const quiet = await run({ ...same, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', []), thread('U1', 'why?', [])] })
+  assert.equal(quiet.result.status, 'no_change')
+})
