@@ -742,14 +742,14 @@ const main = async () => {
     const now = applyAnswers([])
     return { round: S.last.round, open: openCounts(now.states), needs_human: now.needsHuman, auto_rounds_left: autoLeft(roundsPosted()) }
   }
-  // Nothing new: the same head as the last round and no new comment in the reviewer's or the user's threads since it. A reply whose time
-  // can't be read counts as new, so a reply is never skipped.
-  const newReply = S.last && findingThreads().some(t => t.comments.some(c => {
+  // Nothing new: the same head as the last round and no new comment in any thread since it, from anyone but the reviewer. A comment
+  // whose time can't be read counts as new, so a comment is never skipped.
+  const newReply = S.last && [...findingThreads(), ...S.humanThreads].some(t => t.comments.some(c => {
     const at = Date.parse(c.created_at)
     return c.kind !== 'reviewer' && (Number.isNaN(at) || at > S.last.created)
   }))
   if (S.last && pr.head === S.last.commit && !newReply) {
-    return result('no_change', { ...standing(), skipped: `nothing new since round ${S.last.round}: no new commit and no new comment in the reviewer's or the user's threads; nothing was posted` })
+    return result('no_change', { ...standing(), skipped: `nothing new since round ${S.last.round}: no new commit and no new comment in any thread; nothing was posted` })
   }
 
   const scout = must(await ag(scoutPrompt(), { label: 'scout', phase: 'Scout', ...tier('sonnet'), schema: SCOUT }), 'scout')

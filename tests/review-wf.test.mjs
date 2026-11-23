@@ -648,3 +648,17 @@ test('on an unchanged head a thread the user started after the last round, or a 
   const quiet = await run({ ...same, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', []), thread('U1', 'why?', [])] })
   assert.equal(quiet.result.status, 'no_change')
 })
+test('a thread the user opened since the last round runs a round on the same head', async () => {
+  const u = thread('U1', 'why?', []); u.comments[0].created_at = iso(2)
+  const { calls, result } = await run({ ...later, pr: { ...later.pr, head: sha('a') }, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', []), u] })
+  assert.equal(calls[0].label, 'scout'); assert.equal(result.status, 'reviewed')
+})
+test('a reply in someone else\'s thread since the last round also runs a round', async () => {
+  const h = thread('H1', 'what about nulls?', [{ author: 'stranger', body: 'still curious', at: 2 }], {}, 'stranger')
+  const { calls } = await run({ ...later, pr: { ...later.pr, head: sha('a') }, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', []), h] })
+  assert.equal(calls[0].label, 'scout')
+})
+test('an older user thread with nothing new is no_change and counts in open', async () => {
+  const { result, calls } = await run({ ...later, pr: { ...later.pr, head: sha('a') }, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', []), thread('U1', 'why?', [])] })
+  assert.equal(calls.length, 0); assert.equal(result.status, 'no_change'); assert.deepEqual(result.open, { blocking: 1, should_fix: 1 })
+})
