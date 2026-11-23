@@ -17,7 +17,7 @@ export const meta = {
 //                 as unknown: the change since that round is then the whole PR diff, and the run never skips as
 //                 "nothing new".
 //   conversation: [{ author: login|null, body, created_at: ISO|null }] the comments on the PR's conversation, outside any thread
-//   threads:      [{ id, url, path, line, resolved, comments: [{ id, author: login|null, body, created_at, url }] }]
+//   threads:      [{ id, url, path, line, resolved, resolved_by: login|null, comments: [{ id, author: login|null, body, created_at, url }] }]
 //   since_fetched: the last round's review commit was fetched into the worktree
 //   codex:        { available: bool, reason: string }
 // Launched without these it fails at once, before any agent runs.
@@ -357,7 +357,8 @@ const priorState = t => {
   return 'open'
 }
 // The threads the verifier answers and the verdict counts: the reviewer's own and the ones the user started.
-const findingThreads = () => [...S.reviewerThreads, ...S.userThreads]
+// A thread the user started and one of the user's logins resolved is closed: it is neither checked nor counted.
+const findingThreads = () => [...S.reviewerThreads, ...S.userThreads.filter(t => !t.userClosed)]
 // Finding threads to check this round: any with a comment after the reviewer's latest one (so a reply after a
 // settled or parked thread is read), then unresolved ones not settled or parked, and resolved ones (by anyone) with no
 // settled reply from the reviewer.
@@ -737,6 +738,7 @@ const main = async () => {
       reviewerThreads.push(th)
     } else if (comments[0].kind === 'user') {
       th.severity = sevOf(comments[0].body) || 'blocker'
+      th.userClosed = t.resolved === true && isStr(t.resolved_by) && logins.includes(t.resolved_by)
       userThreads.push(th)
     } else humanThreads.push(th)
   }

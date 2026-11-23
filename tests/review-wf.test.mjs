@@ -23,10 +23,10 @@ function review(round, { commit = sha('a'), at = round, full = false, verdict = 
   return { id: 'R' + round, author: 'seb', body, commit, state: 'COMMENTED', submitted_at: iso(at) }
 }
 
-function thread(id, firstBody, replies, { resolved = false } = {}, firstAuthor = 'seb') {
+function thread(id, firstBody, replies, { resolved = false, by = null } = {}, firstAuthor = 'seb') {
   const comments = [{ id: id + 'c0', author: firstAuthor, body: firstBody, created_at: iso(0.5), url: 'https://github.com/o/r/pull/7#' + id + 'c0' },
     ...(replies || []).map((r, i) => ({ id: id + 'c' + (i + 1), author: r.author, body: r.body, created_at: iso(r.at), url: 'https://github.com/o/r/pull/7#' + id + 'c' + (i + 1) }))]
-  return { id, url: 'https://github.com/o/r/pull/7#' + id, path: 'a.js', line: 3, resolved, comments }
+  return { id, url: 'https://github.com/o/r/pull/7#' + id, path: 'a.js', line: 3, resolved, resolved_by: resolved ? by : null, comments }
 }
 
 // What each agent returns, by label, unless a test overrides it. Later tasks add to these.
@@ -629,6 +629,22 @@ test('other people\'s threads are context: never verified, resolved or counted',
   assert.deepEqual(result.review.resolve, ['T1']); assert.doesNotMatch(prompt('verifier'), /\[thread H1\]/)
   assert.match(prompt('consolidator'), /\[thread H1\]/); assert.deepEqual(result.open, { blocking: 0, should_fix: 0 })
 })
+test('a thread the user started and resolved themselves is closed: not counted, not rechecked, not unresolved', async () => {
+  const closed = thread('U1', 'why is x mutable?', [], { resolved: true, by: 'seb' })
+  const r1 = await run({ ...pr1, threads: [closed] })
+  assert.equal(r1.result.open.blocking, 0)
+  assert.equal(r1.result.verdict, 'ready_to_merge')
+  const r2 = await run({ ...later, threads: [...later.threads, closed] }, { verifier: () => ({ threads: [v('U1', 'still_wrong', 'fix', '', 'Still open.')] }) })
+  assert.equal(r2.result.open.blocking, 0)
+  assert.ok(!/\[thread U1\]/.test(r2.calls.find(c => c.label === 'verifier')?.prompt || ''), 'not sent to the verifier')
+  assert.ok(!r2.review || !r2.review.unresolve.includes('U1'))
+})
+
+test('a thread the user started and someone else resolved is still counted open', async () => {
+  const r = await run({ ...pr1, threads: [thread('U1', 'why is x mutable?', [], { resolved: true, by: 'stranger' })] })
+  assert.equal(r.result.open.blocking, 1)
+})
+
 test('a thread the user starts is a finding: verified, counted, and resolved once settled on the user\'s PR', async () => {
   const withUser = { ...later, threads: [...later.threads, thread('U1', 'why is x mutable?', [])] }
   const open = await run(withUser)
