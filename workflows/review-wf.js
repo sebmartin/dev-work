@@ -46,6 +46,8 @@ const SEV = { blocker: '🔴', robustness: '🟠', cleanup: '🟡' }
 const BLOCKING = ['blocker', 'robustness']
 // A file:line citation: what a refutation (and a resolve) has to show before it drops anything.
 const EVIDENCE_RE = /[\w./-]+:\d+/
+// A comment that says something was fixed, or cites a commit: from the user's login it may be an agent's.
+const CLAIMS_FIX_RE = /\bfixed\b|\b[0-9a-f]{7,40}\b/i
 const SETTLED = '**✅ Settled:**', STILL = '**Still open:**', PUSHBACK = '**Pushback:**', NEEDS = '**Needs a person:**'
 // In every later-round prompt: when the fixes hold, a round with nothing new is the right outcome.
 const NO_NEW = 'A round with no new findings is the expected result when the fixes hold: say so and stop.'
@@ -76,7 +78,7 @@ const CONSOLIDATED = obj({
   note: str,
 })
 const VERIFY = obj({ threads: arr(obj({ id: str, action: oneOf(['resolve', 'still_wrong', 'push_back', 'needs_person', 'none']),
-  basis: oneOf(['fix', 'decline', 'user', 'none']), evidence: str, reply: str })) })
+  basis: oneOf(['fix', 'decline', 'user', 'none']), evidence: str, reply: str, severity: oneOf(['blocker', 'robustness', 'cleanup', 'none']) })) })
 
 let lastLabel = ''
 const ag = (prompt, opts = {}) => { lastLabel = opts.label; return agent(prompt, { agentType: 'dev-work:worker', ...opts }) }
@@ -373,11 +375,11 @@ const toVerify = () => findingThreads().filter(t => {
 
 const verifierPrompt = (threads, since) => `${GOAL}
 
-You are the verifier for a later round of this review. The threads below are the review's findings and the user's. Earlier rounds posted findings, each in its own thread, and the user may have started threads of their own. The author's side has answered some: develop (the author's agent) says it fixed a finding or declined it, a person may have replied, and someone may have resolved a thread. For each thread below, decide whether the finding is settled and say so in the thread.
+You are the verifier of this review: before the round looks for anything new, you answer the threads already open on the pull request. The threads below are the review's findings and the user's. ${S.last ? 'Earlier rounds posted findings, each in its own thread, and the user may have started threads of their own.' : 'This is the first round, so the threads are the ones the user started before it.'} The author's side has answered some: develop (the author's agent) says it fixed a finding or declined it, a person may have replied, and someone may have resolved a thread. For each thread below, decide whether the finding is settled and say so in the thread.
 
 ${prInfo({ withThreads: false })}
 
-## What changed since the last round
+## ${S.last ? 'What changed since the last round' : 'The change under review'}
 
 \`git diff ${since} ${args.pr.head}\`
 
@@ -389,11 +391,12 @@ ${threads.map(threadText).join('\n\n')}
 
 ## The rules
 
-For every thread above, return one entry (id, action, basis, evidence, reply):
-- A claimed fix, or a thread whose code was touched: check the code at the head, not the reply. When the fix holds, action resolve, basis fix. When it doesn't, action still_wrong, basis fix, and the reply says what is still wrong.
+For every thread above, return one entry (id, action, basis, evidence, reply, severity):
+- A claimed fix, or a thread whose code was touched: check the code at the head, not the reply. When the fix holds, action resolve, basis fix. When it doesn't, action still_wrong, basis fix, and the reply says what is still wrong. This holds whoever claims the fix, user included: the user's account may post for an agent, so a claimed fix is never settled by who wrote it.
 - A decline (develop or a person says it will not be changed): when the reasoning holds, action resolve, basis decline. Otherwise push back once, action push_back, basis decline, with specific evidence. When the reviewer already pushed back in this thread, action needs_person, and the reply says what each side holds.
-- A reply from user settles the finding. "Leave it" is action resolve, basis user. "Fix it" is action still_wrong, basis user, and the reply says what is to be fixed. A reply that asks for nothing ("thanks", "agreed") is action none.
+- A decision from user settles the finding. "Leave it" is action resolve, basis user. "Fix it" is action still_wrong, basis user, and the reply says what is to be fixed. A reply that asks for nothing ("thanks", "agreed") is action none.
 - A thread whose first comment is from user is a finding the user raised: answer it as you answer the reviewer's own. A question in it is settled when it has been answered and the answer is sufficient: action resolve, basis fix, with the file:line that bears out the answer. The user saying in it that it needs no change is action resolve, basis user.
+- severity is for a thread whose first comment is from user and doesn't open with 🔴, 🟠 or 🟡: how much what it asks for matters, by the review's goal. blocker when the change is wrong without it, robustness when the code gets worse without it (a docs request is usually this), cleanup when it's minor. For every other thread, severity is none.
 - A reply from human is the author's side: judge it as you judge develop's. It never settles a finding by itself.
 - No reply and no change: action none.
 - A thread someone else resolved is checked like a claimed fix: reopen it (still_wrong) when the code doesn't hold up.
@@ -422,8 +425,10 @@ const applyAnswers = answers => {
     // (a resolve with no file:line, a still_wrong with no reply), has no answer.
     const answeredNone = !!v && v.action === 'none'
     if (action === 'resolve') {
-      // The user's comment has to come after the reviewer's latest one; an older 'fix it' is not a settlement.
-      const byUser = v.basis === 'user' && t.comments.slice(Math.max(t.comments.map(c => c.kind).lastIndexOf('reviewer'), 0) + 1).some(c => c.kind === 'user')
+      // The user's comment has to come after the reviewer's latest one; an older 'fix it' is not a settlement. A comment
+      // that claims a fix doesn't count either: an agent may post as the user's login, so a fix needs its file:line.
+      const byUser = v.basis === 'user' && t.comments.slice(Math.max(t.comments.map(c => c.kind).lastIndexOf('reviewer'), 0) + 1)
+        .some(c => c.kind === 'user' && !CLAIMS_FIX_RE.test(stripMarks(c.body)))
       if (!byUser && !(isStr(v.evidence) && EVIDENCE_RE.test(v.evidence))) action = 'none'
     }
     if (action === 'push_back') {
@@ -433,7 +438,7 @@ const applyAnswers = answers => {
     let state = priorState(t)
     if (!s) action = 'none'
     else if (action === 'resolve') {
-      const cite = v.basis === 'user' ? '' : ` (${v.evidence.trim()})`
+      const cite = isStr(v.evidence) && EVIDENCE_RE.test(v.evidence) ? ` (${v.evidence.trim()})` : ''
       out.replies.push({ thread: t.id, body: `${SETTLED} ${s.reply}${cite}${mark}` })
       if (S.mine && !t.resolved) out.resolve.push(t.id)
       state = 'closed'
@@ -461,7 +466,9 @@ const applyAnswers = answers => {
       else if (r !== null && r.startsWith(NEEDS)) state = 'needs_person'
     }
     if (action === 'none' && state === 'needs_person') needs(t, stripMarks(latestReviewerReply(t) || '').slice(NEEDS.length).trim())
-    out.states.push({ severity: t.severity, state })
+    // An untagged user thread takes the severity the verifier gave it this round, else the default it was read with.
+    const severity = t.untagged && v && ['blocker', 'robustness', 'cleanup'].includes(v.severity) ? v.severity : t.severity
+    out.states.push({ severity, state, url: t.url, where: t.path ? `${t.path}${Number.isInteger(t.line) ? ':' + t.line : ''}` : null })
   }
   return out
 }
@@ -659,7 +666,7 @@ const statusLike = s => /Another round is needed|Found nothing left to address|a
 // The review's body. Its status is written here, never by an agent.
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
 const summaryMark = ({ round, fullPass, verdict, left }) => `<!-- dev-work:review round=${round} full=${fullPass} status=reviewed verdict=${verdict} auto_rounds_left=${left} -->`
-const summary = ({ round, fullPass, since, verdict, fixable, minorOpen, waiting, droppedMinor, note, limit, reason, rounds, left, settled = 0, found = {} }) => {
+const summary = ({ round, fullPass, since, verdict, fixable, earlier = [], minorOpen, waiting, droppedMinor, note, limit, reason, rounds, left, settled = 0, found = {} }) => {
   // The needs_work line counts only threads waiting on a fix; parked ones are listed as waiting on a person.
   const b = fixable.blocking, s = fixable.should_fix
   const parts = [fullPass ? `**Round ${round}: full review.**` : `**Round ${round}: review of the changes since round ${since}.**`]
@@ -672,7 +679,9 @@ const summary = ({ round, fullPass, since, verdict, fixable, minorOpen, waiting,
   // Where the review stands. Never "done": the round has just finished, so say what is left.
   const links = waiting.filter(w => w.url).map(w => w.url).join(', ')
   if (verdict === 'needs_work') {
-    parts.push(`Another round is needed: ${b} 🔴, ${s} 🟠 waiting on fixes.${links ? ` Also waiting on a person: ${links}.` : ''}`)
+    // The threads behind the count that this round didn't post, so every count can be traced to a comment.
+    const from = earlier.map(x => `${SEV[x.severity]} ${x.where ? `[${x.where}](${x.url})` : x.url}`).join(', ')
+    parts.push(`Another round is needed: ${b} 🔴, ${s} 🟠 waiting on fixes.${from ? ` From earlier threads: ${from}.` : ''}${links ? ` Also waiting on a person: ${links}.` : ''}`)
   } else if (verdict === 'needs_human') {
     parts.push(`Only threads that need a person's judgement are left${links ? `: ${links}` : ''}.`)
   } else {
@@ -739,7 +748,9 @@ const main = async () => {
       th.severity = sevOf(comments[0].body)
       reviewerThreads.push(th)
     } else if (comments[0].kind === 'user') {
-      th.severity = sevOf(comments[0].body) || 'blocker'
+      // Untagged, it's a 🟠 until the verifier says otherwise: something the user asked for blocks until it's answered.
+      th.severity = sevOf(comments[0].body) || 'robustness'
+      th.untagged = sevOf(comments[0].body) === null
       // Closed by the user only when the reviewer didn't settle it: the reviewer resolves a settled thread as the
       // same account, and a later reply there must still be read.
       th.userClosed = t.resolved === true && isStr(t.resolved_by) && logins.includes(t.resolved_by)
@@ -786,8 +797,9 @@ const main = async () => {
     ? `A full review was warranted (${reason}) but the limit of two per pull request was reached, so this needs a person.`
     : null
 
-  // Later rounds: answer each earlier finding's thread before looking for anything new.
-  const stale = S.round > 1 ? toVerify() : []
+  // Answer the threads already open before looking for anything new: earlier findings, and the user's own threads, in
+  // round 1 too.
+  const stale = toVerify()
   const answered = stale.length
     ? must(await ag(verifierPrompt(stale, since()), { label: 'verifier', phase: 'Verify', ...tier('opus'), schema: VERIFY }), 'verifier')
     : { threads: [] }
@@ -827,7 +839,8 @@ const main = async () => {
   const review = {
     event: S.mine ? 'COMMENT' : 'PENDING',
     commit: pr.head,
-    body: summary({ round: S.round, fullPass, since: S.last ? S.last.round : null, verdict, fixable, minorOpen, waiting: applied.needsHuman, droppedMinor, note: c.note, limit, reason, rounds: count, left,
+    body: summary({ round: S.round, fullPass, since: S.last ? S.last.round : null, verdict, fixable, minorOpen,
+      earlier: applied.states.filter(x => x.state === 'open' && BLOCKING.includes(x.severity) && x.url), waiting: applied.needsHuman, droppedMinor, note: c.note, limit, reason, rounds: count, left,
       settled: applied.replies.filter(r => r.body.startsWith(SETTLED)).length,
       found: posted.reduce((n, f) => ({ ...n, [f.severity]: (n[f.severity] || 0) + 1 }), {}) }),
     comments: posted.map(f => ({ path: f.path, line: f.line, body: render(f, S.round) })),

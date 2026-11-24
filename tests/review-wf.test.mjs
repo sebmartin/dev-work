@@ -570,7 +570,7 @@ test('needs_work lists the threads waiting on a person beside the open findings'
   const parked = thread('T2', '🔴 **B** <!-- dev-work:review round=1 -->', [{ author: 'seb', body: '**Needs a person:** x <!-- dev-work:review round=2 -->', at: 3 }])
   const { result } = await run({ ...later, threads: [...later.threads, parked], reviews: r2 })
   assert.equal(result.verdict, 'needs_work'); assert.deepEqual(result.needs_human.map(n => n.thread), ['T2'])
-  assert.match(result.review.body, /Another round is needed: 0 🔴, 1 🟠 waiting on fixes\. Also waiting on a person: https:\/\/github\.com\/o\/r\/pull\/7#T2\./)
+  assert.match(result.review.body, /Another round is needed: 0 🔴, 1 🟠 waiting on fixes\. From earlier threads: 🟠 \[a\.js:3\]\(https:\/\/github\.com\/o\/r\/pull\/7#T1\)\. Also waiting on a person: https:\/\/github\.com\/o\/r\/pull\/7#T2\./)
 })
 test('ready_to_merge recommends merging and mentions a 🟡 still open', async () => {
   const minor = thread('T3', '🟡 **m** <!-- dev-work:review round=1 -->', [])
@@ -646,29 +646,38 @@ test('a user thread the reviewer settled and resolved is not closed by the user:
     { author: 'seb', body: 'No, still mutable on the reset path, fix it', at: 4 }], { resolved: true, by: 'seb' })
   const { result, calls } = await run({ ...later, threads: [...later.threads, t], reviews: r2 }, { verifier: () => ({ threads: [] }) })
   assert.match(calls.find(c => c.label === 'verifier').prompt, /\[thread U1\]/)
-  assert.equal(result.open.blocking, 1); assert.equal(result.verdict, 'needs_work')
+  assert.deepEqual(result.open, { blocking: 0, should_fix: 2 }); assert.equal(result.verdict, 'needs_work')
 })
 
 test('a thread the user started and someone else resolved is still counted open', async () => {
   const r = await run({ ...pr1, threads: [thread('U1', 'why is x mutable?', [], { resolved: true, by: 'stranger' })] })
-  assert.equal(r.result.open.blocking, 1)
+  assert.deepEqual(r.result.open, { blocking: 0, should_fix: 1 })
 })
 
 test('a thread the user starts is a finding: verified, counted, and resolved once settled on the user\'s PR', async () => {
   const withUser = { ...later, threads: [...later.threads, thread('U1', 'why is x mutable?', [])] }
   const open = await run(withUser)
-  assert.match(open.prompt('verifier'), /\[thread U1\]/); assert.equal(open.result.open.blocking, 1); assert.equal(open.result.verdict, 'needs_work')
+  assert.match(open.prompt('verifier'), /\[thread U1\]/); assert.deepEqual(open.result.open, { blocking: 0, should_fix: 2 }); assert.equal(open.result.verdict, 'needs_work')
   const settled = await run(withUser, { verifier: () => ({ threads: [v('T1', 'resolve', 'fix', 'a.js:5', 'ok'), v('U1', 'resolve', 'fix', 'a.js:9', 'x is frozen at a.js:9.')] }) })
   assert.deepEqual(settled.result.review.resolve, ['T1', 'U1']); assert.equal(settled.result.open.blocking, 0); assert.equal(settled.result.verdict, 'ready_to_merge')
 })
-test('a user thread takes the severity emoji it opens with, and 🔴 otherwise', async () => {
+test('a user thread takes the severity emoji it opens with, and 🟠 otherwise', async () => {
   const ts = [thread('U1', '🟡 rename this', []), thread('U2', '  🟠 this races', []), thread('U3', '👍 nice, but why?', [])]
   const { result } = await run({ ...later, threads: ts })
-  assert.deepEqual(result.open, { blocking: 1, should_fix: 1 })
+  assert.deepEqual(result.open, { blocking: 0, should_fix: 2 })
+})
+test('the verifier sets the severity of an untagged user thread, and never of a tagged one', async () => {
+  const ts = [thread('U1', 'add a docstring here', []), thread('U2', '🟡 rename this', [])]
+  const sev = (u1, u2) => ({ verifier: () => ({ threads: [{ ...v('U1', 'none', 'none', '', ''), severity: u1 }, { ...v('U2', 'none', 'none', '', ''), severity: u2 }] }) })
+  const minor = await run({ ...pr1, threads: ts }, sev('cleanup', 'blocker'))
+  assert.deepEqual(minor.result.open, { blocking: 0, should_fix: 0 }); assert.equal(minor.result.verdict, 'ready_to_merge')
+  const heavy = await run({ ...pr1, threads: ts }, sev('blocker', 'none'))
+  assert.deepEqual(heavy.result.open, { blocking: 1, should_fix: 0 })
+  assert.match(heavy.prompt('verifier'), /severity is for a thread whose first comment is from user/)
 })
 test('the user\'s opening comment is not a reply: a basis-user resolve needs a later user comment or file:line', async () => {
   const bare = await run({ ...later, threads: [thread('U1', 'why?', [])] }, { verifier: () => ({ threads: [v('U1', 'resolve', 'user', '', 'ok')] }) })
-  assert.deepEqual(bare.result.review.resolve, []); assert.deepEqual(bare.result.review.replies, []); assert.equal(bare.result.open.blocking, 1)
+  assert.deepEqual(bare.result.review.resolve, []); assert.deepEqual(bare.result.review.replies, []); assert.deepEqual(bare.result.open, { blocking: 0, should_fix: 1 })
   const said = await run({ ...later, threads: [thread('U1', 'why?', [{ author: 'seb', body: 'no change needed', at: 2 }])] }, { verifier: () => ({ threads: [v('U1', 'resolve', 'user', '', 'Left as it is.')] }) })
   assert.deepEqual(said.result.review.resolve, ['U1'])
 })
@@ -681,9 +690,31 @@ test('on someone else\'s PR a settled user thread gets a settled reply, is not r
   const { result } = await run({ ...stranger, threads: [thread('U1', 'why?', [])] }, { verifier: () => ({ threads: [v('U1', 'resolve', 'fix', 'a.js:9', 'Answered.')] }) })
   assert.deepEqual(result.review.resolve, []); assert.match(result.review.replies[0].body, /^\*\*✅ Settled:\*\*/); assert.equal(result.open.blocking, 0)
 })
-test('in round 1 a thread the user started counts towards the verdict and no verifier runs', async () => {
-  const { calls, result } = await run({ ...pr1, threads: [thread('U1', 'why?', [])] })
-  assert.ok(!calls.some(c => c.label === 'verifier')); assert.equal(result.open.blocking, 1); assert.equal(result.verdict, 'needs_work')
+test('round 1 runs the verifier only when the user has open threads, over those threads', async () => {
+  const none = await run(pr1)
+  assert.ok(!none.calls.some(c => c.label === 'verifier'))
+  const { prompt, result } = await run({ ...pr1, threads: [thread('U1', 'why?', [])] })
+  assert.match(prompt('verifier'), /\[thread U1\]/); assert.match(prompt('verifier'), /This is the first round/)
+  assert.match(prompt('verifier'), new RegExp(`## The change under review\\n\\n\`git diff ${sha('b')} ${sha('c')}\``))
+  assert.deepEqual(result.open, { blocking: 0, should_fix: 1 }); assert.equal(result.verdict, 'needs_work')
+})
+test('in round 1 a fix the author claimed in the user\'s thread is settled when it holds at the head', async () => {
+  const t = thread('U1', 'please document parse()', [{ author: 'author-bot', body: 'Added the docstring in 1234abc.', at: 0.7 }])
+  const { result } = await run({ ...pr1, threads: [t] }, { verifier: () => ({ threads: [v('U1', 'resolve', 'fix', 'a.js:2', 'parse() is documented now.')] }) })
+  assert.deepEqual(result.review.resolve, ['U1']); assert.match(result.review.replies[0].body, /^\*\*✅ Settled:\*\* parse\(\) is documented now\. \(a\.js:2\)/)
+  assert.deepEqual(result.open, { blocking: 0, should_fix: 0 }); assert.equal(result.verdict, 'ready_to_merge')
+})
+test('the summary links each earlier thread behind its count, and no thread this round posted', async () => {
+  const { result } = await run({ ...pr1, threads: [thread('U1', 'why?', [])] }, { consolidator: () => ({ ...empty, findings: [f({ severity: 'blocker', line: 9 })] }) })
+  assert.match(result.review.body, /Another round is needed: 1 🔴, 1 🟠 waiting on fixes\. From earlier threads: 🟠 \[a\.js:3\]\(https:\/\/github\.com\/o\/r\/pull\/7#U1\)\./)
+})
+test('a reply from the user\'s login that claims a fix is not the user settling it: it needs file:line', async () => {
+  const claimed = thread('T1', '🟠 **H** · `a.js:3` <!-- dev-work:review round=1 -->', [{ author: 'seb', body: 'Fixed in 1234abc.', at: 2 }])
+  const bare = await run({ ...later, threads: [claimed] }, { verifier: () => ({ threads: [v('T1', 'resolve', 'user', '', 'ok')] }) })
+  assert.deepEqual(bare.result.review.resolve, []); assert.deepEqual(bare.result.open, { blocking: 0, should_fix: 1 })
+  const cited = await run({ ...later, threads: [claimed] }, { verifier: () => ({ threads: [v('T1', 'resolve', 'user', 'a.js:5', 'Holds.')] }) })
+  assert.deepEqual(cited.result.review.resolve, ['T1']); assert.match(cited.result.review.replies[0].body, /Holds\. \(a\.js:5\)/)
+  assert.match(bare.prompt('verifier'), /a claimed fix is never settled by who wrote it/)
 })
 test('the verifier is told how to settle the user\'s own threads', async () => {
   const { prompt } = await run({ ...later, threads: [thread('U1', 'why?', [])] })
@@ -713,5 +744,5 @@ test('a reply in someone else\'s thread since the last round also runs a round',
 })
 test('an older user thread with nothing new is no_change and counts in open', async () => {
   const { result, calls } = await run({ ...later, pr: { ...later.pr, head: sha('a') }, threads: [thread('T1', '🟠 **H** <!-- dev-work:review round=1 -->', []), thread('U1', 'why?', [])] })
-  assert.equal(calls.length, 0); assert.equal(result.status, 'no_change'); assert.deepEqual(result.open, { blocking: 1, should_fix: 1 })
+  assert.equal(calls.length, 0); assert.equal(result.status, 'no_change'); assert.deepEqual(result.open, { blocking: 0, should_fix: 2 })
 })
