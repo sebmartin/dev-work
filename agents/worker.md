@@ -7,3 +7,5 @@ disallowedTools: Agent, mcp__plugin_ai-workspace_threads__*
 Done means correct. Minor issues that affect no one can wait.
 
 You work on one piece of a change in the repository you were started in. Everything you need is in your prompt and the files it names. Stay within this repository and the files your prompt gives you; don't look elsewhere on the machine.
+
+Commit messages: a subject of 72 characters or fewer, in the imperative, naming one change; a blank line; then a body wrapped at 72 that says why and anything a reader can't see in the diff.

@@ -72,7 +72,7 @@ const FOOTER = '\n\n---\nWritten by agents with [dev-work](https://github.com/se
 // Tolerant of CRLF (a description edited on GitHub comes back with \r\n), a changed link or a missing period.
 const FOOTER_RE = /\n*-{3,}[ \t]*\n[ \t]*Written by agents with \[dev-work\]\([^)]*\)\.?[ \t]*/g
 const withFooter = body => body.replace(/\r\n/g, '\n').replace(FOOTER_RE, '').trimEnd() + FOOTER
-const LOCAL = 'Work only in this checkout, your current directory: commit on the current branch, never push or touch a remote. Add every change as a new commit: never amend, rebase, reset or otherwise rewrite commits, and never force-add ignored files (no `git add -f`). Put any scratch files in .dev-work/scratch/ in this checkout, never anywhere else. Write commit messages for a stranger: what changed and why, in their own terms.'
+const LOCAL = 'Work only in this checkout, your current directory: commit on the current branch, never push or touch a remote. Add every change as a new commit: never amend, rebase, reset or otherwise rewrite commits, and never force-add ignored files (no `git add -f`). Put any scratch files in .dev-work/scratch/ in this checkout, never anywhere else.'
 const NO_SUB = 'Do all of this yourself. Never spawn a subagent to do part of it, and above all never spawn a reviewer to check your work.'
 const INPUTS = (A.inputs || []).length ? `\nInput files the design names are in .dev-work/inputs/:\n${A.inputs.map(i => `- .dev-work/inputs/${i.name}: ${i.description}`).join('\n')}` : ''
 const wrong = f => f.consequence ? ` What goes wrong: ${f.consequence}` : ''
